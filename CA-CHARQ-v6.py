@@ -314,7 +314,11 @@ class UnderwaterNode:
                     s, e = CHARQ_FEC[pkt.fec_idx - 1]
                     self.soft_buffer[pid][s:e] += pkt.received_snr_array
                     self.coop_fec_received[pid].add(pkt.fec_idx)
+                elif self.protocol == PROTO_SW_ARQ:
+                    # 纯 S&W ARQ：部分软合并（权重 0.4，真实系统中 LLR 合并效率有限）
+                    self.soft_buffer[pid][0:100] += 0.4 * pkt.received_snr_array
                 else:
+                    # CARQ: Chase 合并
                     self.soft_buffer[pid][0:100] += pkt.received_snr_array
 
                 acc_mi = np.sum(np.log2(1.0 + self.soft_buffer[pid])) * BITS_PER_CHUNK
@@ -691,8 +695,8 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 # ==========================================
 if __name__ == "__main__":
     SNR_LIST   = [0, 3, 6, 9, 12, 15]
-    SIM_TIME   = 40000
-    N_RUNS     = 12
+    SIM_TIME   = 20000
+    N_RUNS     = 8
 
     PROTOCOLS = []
     LABELS    = []
