@@ -761,8 +761,8 @@ if __name__ == "__main__":
     ax2.grid(True, ls=':', alpha=0.5); ax2.legend(fontsize=8)
 
     plt.tight_layout()
-    plt.savefig("v5_Delay_Overhead.png", dpi=150, bbox_inches='tight')
-    print("\n[OK] v5_Delay_Overhead.png")
+    plt.savefig("v6_Delay_Overhead.png", dpi=150, bbox_inches='tight')
+    print("\n[OK] v6_Delay_Overhead.png")
 
     fig2, (ax3, ax4) = plt.subplots(1, 2, figsize=(16, 5.5))
     for proto in PROTOCOLS:
@@ -792,8 +792,8 @@ if __name__ == "__main__":
     ax4.grid(True, ls=':', alpha=0.5); ax4.legend(fontsize=8)
 
     plt.tight_layout()
-    plt.savefig("v5_DropRate_Throughput.png", dpi=150, bbox_inches='tight')
-    print("[OK] v5_DropRate_Throughput.png")
+    plt.savefig("v6_DropRate_Throughput.png", dpi=150, bbox_inches='tight')
+    print("[OK] v6_DropRate_Throughput.png")
     plt.close('all')
 
     # ---- 文本汇总 ----
