@@ -385,6 +385,19 @@ class UnderwaterNode:
                         if self.merge_count[pid] >= MAX_MERGE_ATTEMPTS:
                             self.soft_buffer.pop(pid, None)
                             self.merge_count.pop(pid, None); return
+                        # 等 1.5s 让主动 helper 数据先到，避免不必要的源端重传
+                        yield self.env.timeout(1.5)
+                        if isinstance(self.soft_buffer.get(pid), str):
+                            return  # helper 数据已触发 ACK，不发送 NACK
+                        acc_mi2 = np.sum(np.log2(1.0 + self.soft_buffer[pid])) * BITS_PER_CHUNK
+                        if acc_mi2 >= TARGET_MI:
+                            self.soft_buffer[pid] = "SUCCESS"
+                            yield self.env.process(self.send_ack(pkt.hop_tx, pid))
+                            if self.is_dest:
+                                self.stats.e2e_success(pid, self.env.now - pkt.creation_time)
+                            else:
+                                self.tx_queue.put((pid, pkt.creation_time))
+                            return
                         yield self.env.process(self.send_nack(
                             pkt.hop_tx, pid, rv, c))
                     else:
@@ -677,8 +690,8 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 # ==========================================
 if __name__ == "__main__":
     SNR_LIST   = [0, 3, 6, 9, 12, 15]
-    SIM_TIME   = 25000
-    N_RUNS     = 5
+    SIM_TIME   = 40000
+    N_RUNS     = 12
 
     PROTOCOLS = []
     LABELS    = []

@@ -691,8 +691,8 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 # ==========================================
 if __name__ == "__main__":
     SNR_LIST   = [0, 3, 6, 9, 12, 15]
-    SIM_TIME   = 25000
-    N_RUNS     = 5
+    SIM_TIME   = 40000
+    N_RUNS     = 12
 
     PROTOCOLS = []
     LABELS    = []
