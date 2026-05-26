@@ -318,8 +318,8 @@ class UnderwaterNode:
                     # 纯 S&W ARQ：部分软合并（权重 0.4，真实系统中 LLR 合并效率有限）
                     self.soft_buffer[pid][0:100] += 0.4 * pkt.received_snr_array
                 else:
-                    # CARQ: Chase 合并
-                    self.soft_buffer[pid][0:100] += pkt.received_snr_array
+                    # CARQ: 部分 Chase 合并（权重 0.4，与 S&W 一致)
+                    self.soft_buffer[pid][0:100] += 0.4 * pkt.received_snr_array
 
                 acc_mi = np.sum(np.log2(1.0 + self.soft_buffer[pid])) * BITS_PER_CHUNK
 
@@ -696,7 +696,7 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 if __name__ == "__main__":
     SNR_LIST   = [0, 3, 6, 9, 12, 15]
     SIM_TIME   = 20000
-    N_RUNS     = 8
+    N_RUNS     = 6
 
     PROTOCOLS = []
     LABELS    = []
@@ -768,9 +768,9 @@ if __name__ == "__main__":
     plt.savefig("v6_Delay_Overhead.png", dpi=150, bbox_inches='tight')
     print("\n[OK] v6_Delay_Overhead.png")
 
-    fig2, (ax3, ax4) = plt.subplots(1, 2, figsize=(16, 5.5))
+    fig2, ax3 = plt.subplots(1, 1, figsize=(8, 5.5))
     for proto in PROTOCOLS:
-        y = np.array(results[proto]['drop_rate'][0]); e = np.array(results[proto]['drop_rate'][1])
+        y = np.array(results[proto]['throughput'][0]); e = np.array(results[proto]['throughput'][1])
         mask = ~np.isnan(y)
         if mask.any():
             xm = np.array(SNR_LIST)[mask]
@@ -778,26 +778,13 @@ if __name__ == "__main__":
                          color=COLORS[proto], capsize=3, lw=2, ms=7, label=proto)
         else:
             ax3.plot([], [], STYLES[proto], color=COLORS[proto], label=proto)
-    ax3.set_title("E2E Drop Rate vs SNR", fontsize=13, fontweight='bold')
-    ax3.set_xlabel("Per-Hop SNR (dB)"); ax3.set_ylabel("Drop Rate")
+    ax3.set_title("E2E Throughput vs SNR", fontsize=13, fontweight='bold')
+    ax3.set_xlabel("Per-Hop SNR (dB)"); ax3.set_ylabel("Throughput (Chunks/s)")
     ax3.grid(True, ls=':', alpha=0.5); ax3.legend(fontsize=8)
 
-    for proto in PROTOCOLS:
-        y = np.array(results[proto]['throughput'][0]); e = np.array(results[proto]['throughput'][1])
-        mask = ~np.isnan(y)
-        if mask.any():
-            xm = np.array(SNR_LIST)[mask]
-            ax4.errorbar(xm, y[mask], yerr=e[mask], fmt=STYLES[proto],
-                         color=COLORS[proto], capsize=3, lw=2, ms=7, label=proto)
-        else:
-            ax4.plot([], [], STYLES[proto], color=COLORS[proto], label=proto)
-    ax4.set_title("E2E Throughput vs SNR", fontsize=13, fontweight='bold')
-    ax4.set_xlabel("Per-Hop SNR (dB)"); ax4.set_ylabel("Throughput (Chunks/s)")
-    ax4.grid(True, ls=':', alpha=0.5); ax4.legend(fontsize=8)
-
     plt.tight_layout()
-    plt.savefig("v6_DropRate_Throughput.png", dpi=150, bbox_inches='tight')
-    print("[OK] v6_DropRate_Throughput.png")
+    plt.savefig("v6_Throughput.png", dpi=150, bbox_inches='tight')
+    print("[OK] v6_Throughput.png")
     plt.close('all')
 
     # ---- 文本汇总 ----
