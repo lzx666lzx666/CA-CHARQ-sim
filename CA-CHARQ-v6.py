@@ -16,7 +16,7 @@ BITS_PER_CHUNK = 80
 CHUNKS_SYS     = 100
 CHUNKS_PARITY_MAX = 90
 TX_POWER_W     = 15.0
-TARGET_MI      = 12000.0
+TARGET_MI      = 11000.0
 MAX_HOP_RETRYS     = 8
 MAX_MERGE_ATTEMPTS = 16
 T_MAX_WINDOW    = 1.5
@@ -85,11 +85,8 @@ class StatsTracker:
             self._pkt_fate[pid] = 'dropped'
             self.e2e_drop_count += 1
 
-    def get_throughput(self, total_time):
-        if self.e2e_success_count == 0:
-            return 0.0
-        actual = self._last_success_time - self._first_success_time
-        return (self.e2e_success_count * CHUNKS_SYS) / max(actual, 1.0)
+    def get_throughput(self):
+        return (self.e2e_success_count * CHUNKS_SYS) / max(self._last_success_time - self._first_success_time, 1.0) if self.e2e_success_count > 0 else 0.0
 
     def get_avg_delay(self):
         return float(np.mean(self.e2e_delays)) if self.e2e_delays else float('nan')
@@ -349,41 +346,58 @@ class UnderwaterNode:
                             self.tx_queue.put((pid, pkt.creation_time))
                     # --- 不同协议的重传请求 ---
                     elif self.protocol == PROTO_CARQ:
-                        # CARQ: 目的端主导串行协作，Helper 发完整数据包
+                        # CARQ: helper串行协作（低MI时跳过，避免白等）
                         if pkt.fec_idx <= 0:
-                            self.coop_available_cnodes.setdefault(pid, [])
-                            yield self.env.process(self.send_creq(pkt.hop_tx, pid))
-                            yield self.env.timeout(HOP_DIST / SOUND_SPEED * 2)
+                            ratio = acc_mi / TARGET_MI
+                            if ratio < 0.40:  # MI太低，helper也无法解码
+                                if self.merge_count[pid] >= MAX_MERGE_ATTEMPTS:
+                                    self.soft_buffer.pop(pid, None)
+                                    self.merge_count.pop(pid, None); return
+                                yield self.env.process(self.send_nack(
+                                    self.hop_source.get(pid, pkt.hop_tx), pid, 0, 0.0))
+                            else:
+                                self.coop_available_cnodes.setdefault(pid, [])
+                                yield self.env.process(self.send_creq(pkt.hop_tx, pid))
+                                yield self.env.timeout(HOP_DIST / SOUND_SPEED * 2)
 
-                            cnodes = self.coop_available_cnodes.get(pid, [])
-                            if cnodes:
-                                dx, dy = self.x, self.y
-                                cnodes.sort(key=lambda cid: math.hypot(
-                                    self.coop_cnode_position.get(cid, (0,0))[0] - dx,
-                                    self.coop_cnode_position.get(cid, (0,0))[1] - dy))
-                                for cnode_id in cnodes:
-                                    if isinstance(self.soft_buffer.get(pid), str):
-                                        break
-                                    yield self.env.process(self.send_nack_cn(
-                                        cnode_id, pid, 0))
-                                    dist_cn = math.hypot(
-                                        dx - self.coop_cnode_position.get(cnode_id,(0,0))[0],
-                                        dy - self.coop_cnode_position.get(cnode_id,(0,0))[1])
-                                    rtt_val = dist_cn / SOUND_SPEED * 2 + 6.67 + 0.3
-                                    yield self.env.timeout(rtt_val)
-                            if not isinstance(self.soft_buffer.get(pid), str):
+                                cnodes = self.coop_available_cnodes.get(pid, [])
+                                if cnodes:
+                                    dx, dy = self.x, self.y
+                                    cnodes.sort(key=lambda cid: math.hypot(
+                                        self.coop_cnode_position.get(cid, (0,0))[0] - dx,
+                                        self.coop_cnode_position.get(cid, (0,0))[1] - dy))
+                                    for cnode_id in cnodes[:1]:  # 只联系最近的一个helper
+                                        if isinstance(self.soft_buffer.get(pid), str):
+                                            break
+                                        yield self.env.process(self.send_nack_cn(
+                                            cnode_id, pid, 0))
+                                        dist_cn = math.hypot(
+                                            dx - self.coop_cnode_position.get(cnode_id,(0,0))[0],
+                                            dy - self.coop_cnode_position.get(cnode_id,(0,0))[1])
+                                        rtt_val = dist_cn / SOUND_SPEED * 2 + 6.67 + 0.3
+                                        yield self.env.timeout(rtt_val)
+                                if not isinstance(self.soft_buffer.get(pid), str):
+                                    if self.merge_count[pid] >= MAX_MERGE_ATTEMPTS:
+                                        self.soft_buffer.pop(pid, None)
+                                        self.merge_count.pop(pid, None)
+                                        self.coop_available_cnodes.pop(pid, None)
+                                        return
+                                    yield self.env.process(self.send_nack(
+                                        self.hop_source.get(pid, pkt.hop_tx), pid, 0, 0.0))
+                    elif self.protocol == PROTO_CHARQ:
+                        # C-HARQ: 低MI时跳过helper协作，直接让源端Chase
+                        if pkt.fec_idx <= 0:
+                            ratio = acc_mi / TARGET_MI
+                            if ratio < 0.40:
                                 if self.merge_count[pid] >= MAX_MERGE_ATTEMPTS:
                                     self.soft_buffer.pop(pid, None)
                                     self.merge_count.pop(pid, None)
-                                    self.coop_available_cnodes.pop(pid, None)
-                                    return
+                                    self.coop_available_cnodes.pop(pid, None); return
                                 yield self.env.process(self.send_nack(
                                     self.hop_source.get(pid, pkt.hop_tx), pid, 0, 0.0))
-                    elif self.protocol == PROTO_CHARQ:
-                        # C-HARQ: 如果是 FEC 包已成功累积 → 不触发新协作
-                        if pkt.fec_idx <= 0:
-                            self.coop_available_cnodes.setdefault(pid, [])
-                            yield self.env.process(self.send_creq(pkt.hop_tx, pid))
+                            else:
+                                self.coop_available_cnodes.setdefault(pid, [])
+                                yield self.env.process(self.send_creq(pkt.hop_tx, pid))
                             yield self.env.timeout(HOP_DIST / SOUND_SPEED * 2)
 
                             cnodes = self.coop_available_cnodes.get(pid, [])
@@ -393,7 +407,7 @@ class UnderwaterNode:
                                     self.coop_cnode_position.get(cid, (0,0))[0] - dx,
                                     self.coop_cnode_position.get(cid, (0,0))[1] - dy))
                                 fec_done = False
-                                for cnode_id in cnodes:
+                                for cnode_id in cnodes[:1]:  # 只联系最近一个helper
                                     for fec_j in [1, 2]:
                                         if isinstance(self.soft_buffer.get(pid), str):
                                             fec_done = True; break
@@ -666,7 +680,7 @@ def run_sim(snr_db, protocol, sim_time=40000, seed=0):
 
     return {
         "delay": stats.get_avg_delay(), "delay_std": stats.get_delay_std(),
-        "overhead": stats.get_overhead(), "throughput": stats.get_throughput(sim_time),
+        "overhead": stats.get_overhead(), "throughput": stats.get_throughput(),
         "drop_rate": stats.get_drop_rate(),
         "success": stats.e2e_success_count, "drops": stats.e2e_drop_count,
         "data_tx": stats.total_data_tx, "nack_tx": stats.total_nack_tx,
@@ -716,7 +730,7 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 if __name__ == "__main__":
     SNR_LIST   = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     SIM_TIME   = 20000
-    N_RUNS     = 6
+    N_RUNS     = 10
 
     PROTOCOLS = []
     LABELS    = []
