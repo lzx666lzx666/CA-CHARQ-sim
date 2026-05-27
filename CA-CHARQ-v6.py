@@ -63,17 +63,22 @@ class StatsTracker:
         self.e2e_success_count = 0
         self.e2e_drop_count = 0
         self._pkt_fate = {}
+        self._first_success_time = None
+        self._last_success_time = 0.0
 
     def record_tx(self, n_chunks):  self.total_transmitted_chunks += n_chunks
     def record_data_tx(self):       self.total_data_tx += 1
     def record_nack_tx(self):       self.total_nack_tx += 1
     def record_ack_tx(self):        self.total_ack_tx += 1
 
-    def e2e_success(self, pid, delay):
+    def e2e_success(self, pid, delay, now):
         if pid not in self._pkt_fate:
             self._pkt_fate[pid] = 'success'
             self.e2e_success_count += 1
             self.e2e_delays.append(delay)
+            self._last_success_time = now
+            if self._first_success_time is None:
+                self._first_success_time = now
 
     def e2e_drop(self, pid):
         if pid not in self._pkt_fate:
@@ -81,7 +86,10 @@ class StatsTracker:
             self.e2e_drop_count += 1
 
     def get_throughput(self, total_time):
-        return (self.e2e_success_count * CHUNKS_SYS) / max(total_time, 1.0)
+        if self.e2e_success_count == 0:
+            return 0.0
+        actual = self._last_success_time - self._first_success_time
+        return (self.e2e_success_count * CHUNKS_SYS) / max(actual, 1.0)
 
     def get_avg_delay(self):
         return float(np.mean(self.e2e_delays)) if self.e2e_delays else float('nan')
@@ -315,7 +323,7 @@ class UnderwaterNode:
                     yield self.env.process(self.send_ack(self.hop_source.get(pid, pkt.hop_tx), pid))
                     if self.is_dest:
                         self.stats.e2e_success(
-                            pid, self.env.now - pkt.creation_time)
+                            pid, self.env.now - pkt.creation_time, self.env.now)
                     else:
                         self.tx_queue.put((pid, pkt.creation_time))
                 else:
@@ -336,7 +344,7 @@ class UnderwaterNode:
                         self.soft_buffer[pid] = "SUCCESS"
                         yield self.env.process(self.send_ack(self.hop_source.get(pid, pkt.hop_tx), pid))
                         if self.is_dest:
-                            self.stats.e2e_success(pid, self.env.now - pkt.creation_time)
+                            self.stats.e2e_success(pid, self.env.now - pkt.creation_time, self.env.now)
                         else:
                             self.tx_queue.put((pid, pkt.creation_time))
                     # --- 不同协议的重传请求 ---
