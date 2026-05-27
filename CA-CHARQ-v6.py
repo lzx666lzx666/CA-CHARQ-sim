@@ -16,9 +16,9 @@ BITS_PER_CHUNK = 80
 CHUNKS_SYS     = 100
 CHUNKS_PARITY_MAX = 90
 TX_POWER_W     = 15.0
-TARGET_MI      = 25000.0
-MAX_HOP_RETRYS     = 20
-MAX_MERGE_ATTEMPTS = 40
+TARGET_MI      = 12000.0
+MAX_HOP_RETRYS     = 8
+MAX_MERGE_ATTEMPTS = 16
 T_MAX_WINDOW    = 1.5
 T_PROTECTION_GAP = 0.2
 W1, W2, W3 = 0.40, 0.25, 0.35
@@ -28,14 +28,14 @@ HOP_DIST = 600.0
 NUM_HOPS = 5
 N_HELPERS_PER_HOP = 3          # 每跳 3 个协作节点（统一场景）
 
-RV_SLICES = {0: (0, 100), 1: (100, 125), 2: (100, 150), 3: (100, 190)}
+RV_SLICES = {0: (0, 100), 1: (100, 130), 2: (100, 160), 3: (100, 190)}
 
-# C-HARQ (Ghosh 2013) 固定 FEC 分片 (Nmx=2, 无自适应，较大的固定开销)
-CHARQ_FEC = [(100, 160), (160, 190)]  # Pac-1(60块), Pac-2(30块)
-CHARQ_FEC_SIZE = [60, 30]
+# C-HARQ (Ghosh 2013) 固定 FEC 分片 (Nmx=2, 无自适应)
+CHARQ_FEC = [(100, 150), (150, 190)]  # Pac-1(50块), Pac-2(40块)
+CHARQ_FEC_SIZE = [50, 40]
 
 # CA-CHARQ helper 协作窗口：仅当源端 IR 接近目标时才跳过 helper；低 MI 时 helper 提供分集增益
-CA_HELPER_SKIP_RATIO = 0.65   # 高于此 → 源端 IR 已足够，不等待
+CA_HELPER_SKIP_RATIO = 0.50   # 高于此 → 源端 IR 已足够，不等待
 
 PROTO_SW_ARQ = "S&W ARQ"
 PROTO_CARQ   = "CARQ"
@@ -336,7 +336,7 @@ class UnderwaterNode:
                     else:
                         self.tx_queue.put((pid, pkt.creation_time))
                 else:
-                    # --- S&W / CARQ: MI直接判断 + 逻辑尾部概率（σ = TARGET/5）---
+                    # S&W / CARQ: MI→逻辑尾部概率模型
                     if self.protocol in (PROTO_SW_ARQ, PROTO_CARQ):
                         mi_curr = np.sum(np.log2(1.0 + self.soft_buffer[pid][0:100])) * BITS_PER_CHUNK
                         if mi_curr >= TARGET_MI:
@@ -349,16 +349,14 @@ class UnderwaterNode:
                             is_ok = (random.random() < succ_prob)
                     else:
                         is_ok = False
-
-                    # --- 不同协议的重传请求 ---
                     if is_ok:
                         self.soft_buffer[pid] = "SUCCESS"
                         yield self.env.process(self.send_ack(self.hop_source.get(pid, pkt.hop_tx), pid))
                         if self.is_dest:
-                            self.stats.e2e_success(
-                                pid, self.env.now - pkt.creation_time)
+                            self.stats.e2e_success(pid, self.env.now - pkt.creation_time)
                         else:
                             self.tx_queue.put((pid, pkt.creation_time))
+                    # --- 不同协议的重传请求 ---
                     elif self.protocol == PROTO_CARQ:
                         # CARQ: 目的端主导串行协作，Helper 发完整数据包
                         if pkt.fec_idx <= 0:
@@ -725,9 +723,9 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 # 10. 主程序
 # ==========================================
 if __name__ == "__main__":
-    SNR_LIST   = [0, 3, 6, 9, 12, 15, 18, 21]
+    SNR_LIST   = [0, 1, 2, 3, 4, 5, 6, 9, 12, 15]
     SIM_TIME   = 20000
-    N_RUNS     = 4
+    N_RUNS     = 6
 
     PROTOCOLS = []
     LABELS    = []
@@ -768,8 +766,8 @@ if __name__ == "__main__":
                   f"Drop={r['drop_rate_mean']:.3f}±{r['drop_rate_ci95']:.3f} | Succ={r['avg_success']:.0f}")
 
     # ---- 绘图 ----
-    plt.rcParams.update({'font.size': 11, 'axes.titlesize': 13, 'axes.titleweight': 'bold',
-                         'legend.fontsize': 9, 'xtick.labelsize': 9, 'ytick.labelsize': 9})
+    plt.rcParams.update({'font.size': 11, 'legend.fontsize': 9,
+                         'xtick.labelsize': 9, 'ytick.labelsize': 9})
     
     fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
@@ -801,10 +799,9 @@ if __name__ == "__main__":
         else:
             ax2.plot([], [], MARKERS[proto]+'-', color=COLORS[proto], label=proto, ms=6)
     ax2.set_xlabel("Average Per-Hop SNR (dB)")
-    ax2.set_ylabel("Transmission Overhead (Tx chunks/Useful chunks)")
+    ax2.set_ylabel("Transmission Overhead (× Usefulness)")
     ax2.grid(True, ls='-', alpha=0.15, color='gray')
     ax2.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
-    # y 轴不从0开始，突出差异
     ax2.set_ylim(bottom=4.5)
     
     plt.tight_layout()
@@ -835,7 +832,7 @@ if __name__ == "__main__":
 
     # ---- 文本汇总 ----
     print(f"\n{'='*65}")
-    print("Final Summary: Overhead (Tx/Useful) mean ± 95% CI")
+    print("Overhead (Tx/Useful) mean ± 95% CI")
     header = f"{'SNR':>5s} |" + "|".join(f" {p:>15s} " for p in PROTOCOLS)
     print(header)
     for i, s in enumerate(SNR_LIST):
@@ -843,17 +840,17 @@ if __name__ == "__main__":
         for proto in PROTOCOLS:
             v = results[proto]['overhead'][0][i]
             e = results[proto]['overhead'][1][i]
-            parts.append(f"{v:.2f}±{e:.2f}" if not np.isnan(v) else "      n/a")
+            parts.append(f"{v:.2f}±{e:.2f}" if not np.isnan(v) else "        n/a")
         print(f"{s:+4d}dB | " + " | ".join(f"{p:>15s}" for p in parts))
 
-    print(f"\nFinal Summary: Delay (s) mean ± 95% CI")
+    print(f"\nDelay (s) mean ± 95% CI")
     print(header)
     for i, s in enumerate(SNR_LIST):
         parts = []
         for proto in PROTOCOLS:
             v = results[proto]['delay'][0][i]
             e = results[proto]['delay'][1][i]
-            parts.append(f"{v:.1f}±{e:.1f}" if not np.isnan(v) else "      n/a")
+            parts.append(f"{v:.0f}±{e:.0f}" if not np.isnan(v) else "        n/a")
         print(f"{s:+4d}dB | " + " | ".join(f"{p:>15s}" for p in parts))
     print("=" * 65)
     print("Done.")
