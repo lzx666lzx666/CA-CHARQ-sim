@@ -16,7 +16,7 @@ BITS_PER_CHUNK = 80
 CHUNKS_SYS     = 100
 CHUNKS_PARITY_MAX = 90
 TX_POWER_W     = 15.0
-TARGET_MI      = 12000.0
+TARGET_MI      = 15000.0
 MAX_HOP_RETRYS     = 30
 MAX_MERGE_ATTEMPTS = 30
 T_MAX_WINDOW    = 1.5
@@ -308,16 +308,19 @@ class UnderwaterNode:
 
                 # ---- 不同协议的软信息合并策略 ----
                 if self.protocol == PROTO_CA:
-                    # CA-CHARQ: 全 IR 合并，RV 块加到对应位置
+                    # CA-CHARQ: 全 IR 合并
                     a, b = pkt.start_idx, pkt.end_idx
                     self.soft_buffer[pid][a:b] += pkt.received_snr_array
-                elif self.protocol == PROTO_CHARQ and pkt.fec_idx > 0:
-                    # C-HARQ: 仅 FEC 包进行 IR 合并；源 Pac-0 走 else 分支（覆盖）
-                    s, e = CHARQ_FEC[pkt.fec_idx - 1]
-                    self.soft_buffer[pid][s:e] += pkt.received_snr_array
-                    self.coop_fec_received[pid].add(pkt.fec_idx)
+                elif self.protocol == PROTO_CHARQ:
+                    # C-HARQ: Pac-0 Chase累加 + FEC IR合并 (Viterbi译码天然支持)
+                    if pkt.fec_idx > 0:
+                        s, e = CHARQ_FEC[pkt.fec_idx - 1]
+                        self.soft_buffer[pid][s:e] += pkt.received_snr_array
+                        self.coop_fec_received[pid].add(pkt.fec_idx)
+                    else:
+                        self.soft_buffer[pid][0:100] += pkt.received_snr_array
                 else:
-                    # S&W ARQ / CARQ / C-HARQ Pac-0: 无软合并，每次独立覆盖
+                    # S&W ARQ / CARQ: 无软合并，每次独立覆盖
                     self.soft_buffer[pid][0:100] = pkt.received_snr_array
 
                 acc_mi = np.sum(np.log2(1.0 + self.soft_buffer[pid])) * BITS_PER_CHUNK
