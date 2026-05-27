@@ -234,28 +234,11 @@ class UnderwaterNode:
                         hop_ok = True
                         break
                     elif msg['type'] == 'NACK':
-                        # ---- helper 监听 (仅 CA-CHARQ 用退避竞争) ----
                         if self.protocol == PROTO_CA:
-                            # 优化：MI 接近目标时跳过 helper，直接重传
-                            if msg.get('skip_helper', False):
-                                rv = msg['req_rv']
-                                yield self.env.process(self.send_data(
-                                    self.next_hop_id, pid, rv, creation_time))
-                            else:
-                                helper_ev = simpy.Event(self.env)
-                                self.helper_heard_events[pid] = helper_ev
-                                deadline = T_MAX_WINDOW * 2 + 7.0
-                                dl_ev = self.env.timeout(deadline)
-
-                                result2 = yield helper_ev | dl_ev
-                                self.helper_heard_events.pop(pid, None)
-
-                                if helper_ev not in result2:
-                                    rv = msg['req_rv']
-                                    if self.protocol != PROTO_CA:
-                                        rv = 0
-                                    yield self.env.process(self.send_data(
-                                        self.next_hop_id, pid, rv, creation_time))
+                            # 源端与C-HARQ一致：始终发RV0(Chase on PAC-0)
+                            # CA-CHARQ的差异化在于helper侧：退避竞争vs串行协作
+                            yield self.env.process(self.send_data(
+                                self.next_hop_id, pid, 0, creation_time))
                         else:
                             # S&W ARQ / C-HARQ：源端收到 NACK 直接重传
                             yield self.env.process(self.send_data(
