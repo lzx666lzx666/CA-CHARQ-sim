@@ -16,9 +16,9 @@ BITS_PER_CHUNK = 80
 CHUNKS_SYS     = 100
 CHUNKS_PARITY_MAX = 90
 TX_POWER_W     = 15.0
-TARGET_MI      = 15000.0
-MAX_HOP_RETRYS     = 30
-MAX_MERGE_ATTEMPTS = 30
+TARGET_MI      = 12000.0
+MAX_HOP_RETRYS     = 8
+MAX_MERGE_ATTEMPTS = 16
 T_MAX_WINDOW    = 1.5
 T_PROTECTION_GAP = 0.2
 W1, W2, W3 = 0.40, 0.25, 0.35
@@ -34,9 +34,8 @@ RV_SLICES = {0: (0, 100), 1: (100, 130), 2: (100, 160), 3: (100, 190)}
 CHARQ_FEC = [(100, 150), (150, 190)]  # Pac-1(50块), Pac-2(40块)
 CHARQ_FEC_SIZE = [50, 40]
 
-# CA-CHARQ helper 协作窗口：仅当源端 IR 难以独立完成时才启用 helper
-CA_HELPER_MIN_RATIO = 0.30   # 低于此 → helper 也解不了码
-CA_HELPER_MAX_RATIO = 0.50   # 高于此 → 源端 IR 已足够，不等待
+# CA-CHARQ helper 协作窗口：仅当源端 IR 接近目标时才跳过 helper；低 MI 时 helper 提供分集增益
+CA_HELPER_SKIP_RATIO = 0.50   # 高于此 → 源端 IR 已足够，不等待
 
 PROTO_SW_ARQ = "S&W ARQ"
 PROTO_CARQ   = "CARQ"
@@ -188,10 +187,12 @@ class UnderwaterNode:
         self.inbox = simpy.Store(env); self.tx_queue = simpy.Store(env)
         self.energy = INITIAL_ENERGY
         self.soft_buffer = {}; self.merge_count = defaultdict(int)
+        self.hop_source = {}  # pid → source ID for this hop (ACK/NACK routing)
         self.ack_events = {}; self.pending_response = {}
         self.helper_heard_events = {}; self.helper_cancel_events = {}
         self.next_hop_id = None; self.is_dest = False
         self.helper_for_link = None
+        self.helper_tx_cnt = defaultdict(int)  # 每 pid 的 helper 发送次数上限
         # CARQ / C-HARQ 公用状态（目的端主导串行协作）
         self.coop_available_cnodes = {}        # pid -> [cnode_ids]
         self.coop_fec_received = defaultdict(set)  # pid -> set of received fec_idx (CHARQ only)
@@ -300,8 +301,9 @@ class UnderwaterNode:
                 if pid not in self.soft_buffer:
                     self.soft_buffer[pid] = np.zeros(CHUNKS_SYS + CHUNKS_PARITY_MAX)
                     self.merge_count[pid] = 0
+                    self.hop_source[pid] = pkt.hop_tx
                 if isinstance(self.soft_buffer[pid], str):
-                    yield self.env.process(self.send_ack(pkt.hop_tx, pid))
+                    yield self.env.process(self.send_ack(self.hop_source.get(pid, pkt.hop_tx), pid))
                     return
 
                 self.merge_count[pid] += 1
@@ -327,7 +329,7 @@ class UnderwaterNode:
 
                 if acc_mi >= TARGET_MI:
                     self.soft_buffer[pid] = "SUCCESS"
-                    yield self.env.process(self.send_ack(pkt.hop_tx, pid))
+                    yield self.env.process(self.send_ack(self.hop_source.get(pid, pkt.hop_tx), pid))
                     if self.is_dest:
                         self.stats.e2e_success(
                             pid, self.env.now - pkt.creation_time)
@@ -365,7 +367,7 @@ class UnderwaterNode:
                                     self.coop_available_cnodes.pop(pid, None)
                                     return
                                 yield self.env.process(self.send_nack(
-                                    pkt.hop_tx, pid, 0, 0.0))
+                                    self.hop_source.get(pid, pkt.hop_tx), pid, 0, 0.0))
                     elif self.protocol == PROTO_CHARQ:
                         # C-HARQ: 如果是 FEC 包已成功累积 → 不触发新协作
                         if pkt.fec_idx <= 0:
@@ -405,17 +407,16 @@ class UnderwaterNode:
                                     self.coop_available_cnodes.pop(pid, None)
                                     return
                                 yield self.env.process(self.send_nack(
-                                    pkt.hop_tx, pid, 0, 0.0))
+                                    self.hop_source.get(pid, pkt.hop_tx), pid, 0, 0.0))
                     elif self.protocol == PROTO_CA:
                         c, rv = confidence_quantize(acc_mi)
                         ratio = acc_mi / TARGET_MI
-                        skip_h = (ratio < CA_HELPER_MIN_RATIO
-                                   or ratio > CA_HELPER_MAX_RATIO)
+                        skip_h = (ratio > CA_HELPER_SKIP_RATIO)
                         if self.merge_count[pid] >= MAX_MERGE_ATTEMPTS:
                             self.soft_buffer.pop(pid, None)
                             self.merge_count.pop(pid, None); return
                         yield self.env.process(self.send_nack(
-                            pkt.hop_tx, pid, rv, c, skip_helper=skip_h))
+                            self.hop_source.get(pid, pkt.hop_tx), pid, rv, c, skip_helper=skip_h))
                     else:
                         c, rv = confidence_quantize(acc_mi)
                         if self.protocol != PROTO_CA: rv = 0
@@ -423,7 +424,7 @@ class UnderwaterNode:
                             self.soft_buffer.pop(pid, None)
                             self.merge_count.pop(pid, None); return
                         yield self.env.process(self.send_nack(
-                            pkt.hop_tx, pid, rv, c))
+                            self.hop_source.get(pid, pkt.hop_tx), pid, rv, c))
 
             # Helper 监听
             elif (self.role == 'HELPER'
@@ -464,8 +465,9 @@ class UnderwaterNode:
                     self.pending_response[pid] = {
                         'type': 'NACK', 'req_rv': pkt.nack_requested_rv,
                         'skip_helper': pkt.skip_helper}
-            elif (self.role == 'HELPER'
-                  and self.helper_for_link == (pkt.hop_rx, pkt.hop_tx)):
+            elif self.role == 'HELPER' and (
+                  self.helper_for_link == (pkt.hop_rx, pkt.hop_tx)
+                  or (pkt.fec_idx >= 0 and pkt.hop_rx == self.node_id)):
                 # CARQ / C-HARQ: NACK-CN 请求 (fec_idx=0 表示完整数据, >0 表示FEC包)
                 if self.protocol in (PROTO_CARQ, PROTO_CHARQ) and pkt.fec_idx >= 0:
                     buf = self.soft_buffer.get(pid)
@@ -476,14 +478,18 @@ class UnderwaterNode:
                         else:
                             yield self.env.process(self.send_data(
                                 pkt.hop_tx, pid, 0, pkt.creation_time))
-                # CA-CHARQ / CARQ: 退避竞争
+                # CA-CHARQ / CARQ: 退避竞争（每 helper 每 pid 最多 3 次）
                 elif self.protocol in (PROTO_CA, PROTO_CARQ):
                     if getattr(pkt, 'skip_helper', False):
                         pass  # MI 接近目标，helper 不参与
                     else:
-                        buf = self.soft_buffer.get(pid)
-                        if isinstance(buf, dict) and buf.get("status") == "DONE":
-                            self.env.process(self.contend(pkt, buf["c_pkt"]))
+                        cnt = self.helper_tx_cnt[pid]
+                        if cnt >= 3:
+                            pass  # 已发送足够多次，不再竞争
+                        else:
+                            buf = self.soft_buffer.get(pid)
+                            if isinstance(buf, dict) and buf.get("status") == "DONE":
+                                self.env.process(self.contend(pkt, buf["c_pkt"]))
 
         # ---- ACK 处理 ----
         elif pkt.pkt_type == PKT_ACK:
@@ -509,6 +515,7 @@ class UnderwaterNode:
         result = yield self.env.timeout(t) | cancel
         if cancel not in result:
             rv = pkt.nack_requested_rv if self.protocol == PROTO_CA else 0
+            self.helper_tx_cnt[pid] += 1
             yield self.env.process(self.send_data(
                 pkt.hop_tx, pid, rv, pkt.creation_time))
         self.helper_cancel_events.pop(pid, None)

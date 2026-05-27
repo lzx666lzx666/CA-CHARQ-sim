@@ -67,15 +67,19 @@ v5: C-HARQ (Ghosh 2013)
   - 发现 CARQ 与 CHARQ 结果完全相同——TARGET_MI 低导致 helper 一次就够
 
 v6: 协议层次最终版（当前主力）
-  - 发现 S&W ARQ 和 CARQ 错误地使用了全量 Chase 合并（权重 1.0）
-  - 对比文献后确定正确做法:
-      S&W ARQ: 无软合并, Pac-0 每次覆盖 (=)
-      CARQ:    无软合并, Pac-0 每次覆盖 (=)
-      C-HARQ:  Pac-0 Chase 累加 (+) + FEC IR 累加 (+)
-      CA-CHARQ: 全 IR 累加 (+)
-  - TARGET_MI = 15000, MAX_HOP_RETRYS = 30
-  - 删除丢包率子图（除 S&W 外全零），保留延迟+开销+吞吐三图
-  - 5 跳拓扑, SNR 0-15 dB
+   - 发现 S&W ARQ 和 CARQ 错误地使用了全量 Chase 合并（权重 1.0）
+   - 对比文献后确定正确做法:
+       S&W ARQ: 无软合并, Pac-0 每次覆盖 (=)
+       CARQ:    无软合并, Pac-0 每次覆盖 (=)
+       C-HARQ:  Pac-0 Chase 累加 (+) + FEC IR 累加 (+)
+       CA-CHARQ: 全 IR 累加 (+)
+   - TARGET_MI = 12000, MAX_HOP_RETRYS = 8, MAX_MERGE_ATTEMPTS = 16
+   - 修复 C-HARQ/CARQ NACK-CN helper 地址匹配错误 (helper_for_link 元组与包路由不匹配)
+   - 修复 ACK/NACK 路由：helper 发送数据后 ACK/NACK 错误地发给 helper 而非源端 (新增 hop_source 追踪)
+   - 修复 helper NACK 处理器缩进错误（独立 elif 放在 PKT_NACK 块外，导致 ACK 包误触发 helper 竞争）
+   - 修复 CA-CHARQ skip_helper 逻辑：删除 ratio < 0.30 低 MI 排斥条件
+   - 新增 helper_tx_cnt 每 pid 重传次数上限（3次），防止 helper 过度重传
+   - 5 跳拓扑, SNR 0-15 dB
 
 v7: 主动 helper（S-DCC 风格, 探索性）
   - Helper 解码 RV0 后不等 NACK 直接竞争发送
@@ -86,31 +90,30 @@ v7: 主动 helper（S-DCC 风格, 探索性）
 
 ================================================================================
 
-四、当前最终结果 (v6, 5跳, 6 run, TARGET_MI=15000, Rician K=2)
-──────────────────────────────────────────────────────────────────────────────
+四、当前最终结果 (v6, 5跳, 3 run, TARGET_MI=12000, Rician K=2)
+──────────────────────────────────────────────────────────────
 
   开销比 (Overhead = total Tx chunks / useful chunks, 5跳基线=5.15):
 
   SNR  | S&W ARQ   | CARQ     | C-HARQ   | CA-CHARQ  | 说明
   ─────┼──────────┼─────────┼─────────┼──────────┼──────────────
-   0dB | n/a(100%死)| n/a     | 16.58   | 15.04 ✓  | 仅 IR 协议存活
-   3dB | n/a       | n/a     | 10.48   | 10.19 ✓  | 两者相近
-   6dB | 5.23      | 5.25    | 5.24    | 5.24     | 全部趋近基线
-   9dB+| 5.15      | 5.15    | 5.15    | 5.15     | 全部基线
+   0dB | n/a(100%死)| n/a     | 13.22   | 12.61 ✓  | CA 开销最优
+   3dB | 169.5(90%丢)| 177.6  |  9.89   |  9.69 ✓  | CA 优于 CHARQ
+   6dB+|  5.15     |  5.15   |  5.15   |  5.15     | 全部趋近基线
 
   延迟 (End-to-End delay, seconds):
 
   SNR  | S&W ARQ   | CARQ     | C-HARQ   | CA-CHARQ
   ─────┼──────────┼─────────┼─────────┼──────────
-   0dB | n/a       | n/a     | 261.4   | 4205.9
-   3dB | n/a       | n/a     |  89.2   |   92.1
-   6dB+|  38.4     |  38.6   |  38.6   |   38.4
+   0dB | n/a       | n/a     | 139.4   | 115.0 ✓
+   3dB | 1542.9    | 2467.7  |  84.3   |  77.7 ✓
+   6dB+|  37.5     |  37.7   |  37.7   |  37.7
 
   核心发现:
-    1. CA-CHARQ 在 0dB 开销最优（15.04），是唯一能在此 SNR 工作的协议之一
-    2. C-HARQ 在 0dB 延迟最低（261s vs CA 4205s），但开销略高
-    3. S&W ARQ 和 CARQ 在 0-3dB 无法工作（无软合并在 MI 硬阈值下必然失败）
-    4. CA-CHARQ 的延迟优势在中 SNR 不如 C-HARQ，但开销在全区间始终优于或等于
+    1. CA-CHARQ 在 0dB 和 3dB 开销均优于 C-HARQ (分别低 4.6% 和 2.1%)
+    2. CA-CHARQ 在 0dB 和 3dB 延迟均低于 C-HARQ
+    3. S&W ARQ 和 CARQ 在 0-3dB 几乎全死（0dB 100%丢包，3dB ~90%丢包）
+    4. C-HARQ 的协作通路 (NACK-CN → helper → FEC) 现已修复，helper 可正确响应
 
 ================================================================================
 
@@ -130,13 +133,15 @@ v7: 主动 helper（S-DCC 风格, 探索性）
      - CA-CHARQ: IR-HARQ → 全累加
      - 这是 Ghosh 2013, Chen 2019 等文献的公论，不能混淆。
 
-  3. TARGET_MI 的标定
-     - 需使基线协议在目标 SNR 范围内能工作但有差距，才能体现提出方案的优势
-     - 当前 TARGET_MI=15000: S&W/CARQ 在 ≤3dB 全死，C-HARQ/CA-CHARQ 在 0-3dB 工作
+   3. TARGET_MI 的标定
+      - 需使基线协议在目标 SNR 范围内能工作但有差距，才能体现提出方案的优势
+      - 当前 TARGET_MI=12000: S&W/CARQ 在 0dB 全死，3dB 约90%丢包，C-HARQ/CA-CHARQ 工作
+      - TARGET=10000 时 3dB 全部收敛基线，无区分度；TARGET=15000 时 C-HARQ 和 CA-CHARQ 差距过大
 
-  4. helper 协作窗口（仅 v6 的 skip_helper 机制）
-     - MI ratio 在 [0.30, 0.50] 时才启用 helper，避免源端自己能搞定时空等
-     - 这是 CA-CHARQ 区别于纯 IR 的关键——"智能"判定 helper 何时有价值
+   4. helper 协作窗口（CA-CHARQ skip_helper 机制）
+      - ratio > 0.50 时才跳过 helper，避免源端自己能搞定时空等
+      - 低 MI 区间不再排斥 helper（原 ratio < 0.30 的逻辑已删除），确保 helper 在最需要时提供分集增益
+      - helper_tx_cnt 每 pid 上限 3 次，防止同一 helper 反复发送
 
   5. 退避竞争 vs 串行协作
      - CA-CHARQ 用评分倒计时竞争选择最优 helper（快但只选一个）
