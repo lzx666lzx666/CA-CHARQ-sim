@@ -706,7 +706,7 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 # 10. 主程序
 # ==========================================
 if __name__ == "__main__":
-    SNR_LIST   = [0, 1, 2, 3, 4, 5, 6, 9, 12, 15]
+    SNR_LIST   = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     SIM_TIME   = 20000
     N_RUNS     = 6
 
@@ -755,34 +755,34 @@ if __name__ == "__main__":
     fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     
     for proto in PROTOCOLS:
-        y = np.array(results[proto]['delay'][0]); e = np.array(results[proto]['delay'][1])
+        y = np.array(results[proto]['delay'][0])
         mask = ~np.isnan(y)
         if mask.any():
             xm = np.array(SNR_LIST)[mask]
-            ax1.errorbar(xm, y[mask], yerr=e[mask], fmt=MARKERS[proto]+'-',
-                         color=COLORS[proto], capsize=3, capthick=1,
-                         lw=1.8, ms=6, label=proto, markeredgewidth=0.5,
-                         markerfacecolor='white', markeredgecolor=COLORS[proto])
+            ax1.plot(xm, y[mask], MARKERS[proto]+'-',
+                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
+                     markerfacecolor='white', markeredgecolor=COLORS[proto],
+                     markeredgewidth=0.8)
         else:
-            ax1.plot([], [], MARKERS[proto]+'-', color=COLORS[proto], label=proto, ms=6)
+            ax1.plot([], [], MARKERS[proto]+'-', color=COLORS[proto], label=proto, ms=7)
     ax1.set_xlabel("Average Per-Hop SNR (dB)")
     ax1.set_ylabel("End-to-End Delay (s)")
     ax1.grid(True, ls='-', alpha=0.15, color='gray')
     ax1.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
     
     for proto in PROTOCOLS:
-        y = np.array(results[proto]['overhead'][0]); e = np.array(results[proto]['overhead'][1])
+        y = np.array(results[proto]['overhead'][0])
         mask = ~np.isnan(y)
         if mask.any():
             xm = np.array(SNR_LIST)[mask]
-            ax2.errorbar(xm, y[mask], yerr=e[mask], fmt=MARKERS[proto]+'-',
-                         color=COLORS[proto], capsize=3, capthick=1,
-                         lw=1.8, ms=6, label=proto, markeredgewidth=0.5,
-                         markerfacecolor='white', markeredgecolor=COLORS[proto])
+            ax2.plot(xm, y[mask], MARKERS[proto]+'-',
+                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
+                     markerfacecolor='white', markeredgecolor=COLORS[proto],
+                     markeredgewidth=0.8)
         else:
-            ax2.plot([], [], MARKERS[proto]+'-', color=COLORS[proto], label=proto, ms=6)
+            ax2.plot([], [], MARKERS[proto]+'-', color=COLORS[proto], label=proto, ms=7)
     ax2.set_xlabel("Average Per-Hop SNR (dB)")
-    ax2.set_ylabel("Transmission Overhead (× Usefulness)")
+    ax2.set_ylabel("Transmission Overhead (x Usefulness)")
     ax2.grid(True, ls='-', alpha=0.15, color='gray')
     ax2.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
     ax2.set_ylim(bottom=4.5)
@@ -793,16 +793,16 @@ if __name__ == "__main__":
 
     fig2, ax3 = plt.subplots(1, 1, figsize=(7, 5))
     for proto in PROTOCOLS:
-        y = np.array(results[proto]['throughput'][0]); e = np.array(results[proto]['throughput'][1])
+        y = np.array(results[proto]['throughput'][0])
         mask = ~np.isnan(y)
         if mask.any():
             xm = np.array(SNR_LIST)[mask]
-            ax3.errorbar(xm, y[mask], yerr=e[mask], fmt=MARKERS[proto]+'-',
-                         color=COLORS[proto], capsize=3, capthick=1,
-                         lw=1.8, ms=6, label=proto, markeredgewidth=0.5,
-                         markerfacecolor='white', markeredgecolor=COLORS[proto])
+            ax3.plot(xm, y[mask], MARKERS[proto]+'-',
+                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
+                     markerfacecolor='white', markeredgecolor=COLORS[proto],
+                     markeredgewidth=0.8)
         else:
-            ax3.plot([], [], MARKERS[proto]+'-', color=COLORS[proto], label=proto, ms=6)
+            ax3.plot([], [], MARKERS[proto]+'-', color=COLORS[proto], label=proto, ms=7)
     ax3.set_xlabel("Average Per-Hop SNR (dB)")
     ax3.set_ylabel("Throughput (System chunks / s)")
     ax3.grid(True, ls='-', alpha=0.15, color='gray')
