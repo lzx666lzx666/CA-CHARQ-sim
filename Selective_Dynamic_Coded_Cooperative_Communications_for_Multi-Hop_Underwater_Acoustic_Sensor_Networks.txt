@@ -1,0 +1,1093 @@
+Received March 28, 2019, accepted April 19, 2019, date of publication April 23, 2019, date of current version June 11, 2019.
+Digital Object Identifier 10.1 109/ACCESS.2019.2912917
+Selective Dynamic Coded Cooperative
+Communications for Multi-Hop Underwater
+Acoustic Sensor Networks
+YOUGAN CHEN
+1,2, (Member, IEEE), XIAOTING JIN1,2, LEI WAN3, (Member, IEEE),
+XIAOKANG ZHANG1,2, AND XIAOMEI XU1,2
+1Key Laboratory of Underwater Acoustic Communication and Marine Information Technology (Xiamen University), Ministry of Education, Xiamen 361005,
+China
+2Shenzhen Research Institute of Xiamen University, Shenzhen 518000, China
+3College of Underwater Acoustic Engineering, Harbin Engineering University, Harbin 150001, China
+Corresponding author: Xiaomei Xu (xmxu@xmu.edu.cn)
+This work was supported in part by the Basic Research Program of Science and Technology of Shenzhen, China, under Grant
+JCYJ20170818141735140, in part by the National Key Research and Development Program of China under Grant 2016YFC1400200,
+in part by the National Natural Science Foundation of China under Grant 41476026, Grant 41676024, and Grant 61801139, in part by the
+Fundamental Research Funds for the Central Universities of China under Grant 20720180078 and Grant 20720180105, and in part by the
+Natural Science Foundation of Fujian Province of China under Grant 2018J05071.
+ABSTRACT Due to the limitation of acoustic velocity in underwater environments, propagation delay is a
+horrible problem in multi-hop underwater acoustic sensor networks (UW-ASNs). In this paper, we proposed
+an improved scheme of dynamic coded cooperation called selective dynamic coded cooperation (S-DCC)
+for the multi-hop UW-ASNs, aiming at reducing the end-to-end delay and improving the transmission
+efciency. In S-DCC scheme, the cooperative node actively transmits blocks with limited redundancy; yet
+the receiver only selectively receives those cooperative blocks depending on its own decoding conditions.
+The S-DCC scheme can utilize the retransmission mechanism adequately to eliminate the waiting time and
+drastically shorten the overall transmission time, the gain of which increases linearly with the number of
+hops. Concerning the transmission delay and energy consumption, we evaluated the performances with the
+different maximum number of retransmissions and different data burst sizes for the proposed S-DCC scheme
+and other compared schemes. The simulation results showed that the proposed S-DCC scheme could achieve
+decent outage performance and reduce the end-to-end delay effectively without extra energy consumption
+compared with other existing schemes, especially for the cases with low transmission signal to noise ratio.
+Sea test data were also adopted to further verify the conclusions.
+INDEX TERMS Energy consumption, multi-hop networks, end-to-end delay, underwater acoustic commu-
+nications.
+I. INTRODUCTION
+With the development of the exploration of the oceans,
+the traditional node-to-node underwater acoustic commu-
+nication has been transformed into networks. Underwater
+Acoustic Sensor Networks (UW-ASNs) have been exten-
+sively used in marine research, commercial and military
+applications [1], [2]. However, the design of UW-ASNs
+is a challenging task due to the harsh characteristics of
+underwater acoustic channels, such as limited frequency,
+The associate editor coordinating the review of this manuscript and
+approving it for publication was Cunhua Pan.distance-dependent bandwidth, high propagation delay, high
+bit error rates and temporary loss of connectivity.
+In underwater acoustic environments, much more trans-
+mission power is required for direct long distance commu-
+nication. Hence the long link is usually divided into several
+short links in multi-hop transmissions where the data can
+be transmitted at a higher rate in each hop. This is because
+multi-hop system can decrease signal attenuation and provide
+more available bandwidth [3], which is especially appealing
+to underwater acoustic channels. On the other hand, most
+sensor nodes in multi-hop UW-ASNs are battery powered and
+are difcult to recharge or replace, which calls for attention to
+the transmission efciency during the design of UW-ASNs.
+705522169-3536 
+2019 IEEE. Translations and content mining are permitted for academic research only.
+Personal use is also permitted, but republication/redistribution requires IEEE permission.
+See http://www.ieee.org/publications_standards/publications/rights/index.html for more information.VOLUME 7, 2019
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+Generally, the end-to-end delay and energy efciency are
+the key metrics considered in the design of UW-ASNs. There
+have been several research articles [4][6] about the end-
+to-end delay and energy-efciency in linear UW-ASNs with
+different focuses. In [4], it proposes an energy-efciency grid
+routing based on 3D cubes for UW-ASNs, considering the
+3D changing topology, high propagation delay, node mobil-
+ity and density. The literature in [5] shows the bandwidth-
+distance, power-distance and delay-distance relationships,
+respectively, for energy-efcient design in UW-ASNs. Fur-
+thermore, in [6], the tradeoffs between energy consump-
+tion and network connectivity in UW-ASNs are investigated.
+Although the aforementioned papers provide some closed-
+form approximate models, it is still difcult to draw a con-
+clusion for the relationship between energy consumption and
+multi-hop network design in the string UW-ASNs. More-
+over, most of the references do not consider the cooperative
+transmission.
+To combat underwater channel unreliability and large path
+losses, cooperative transmission has been applied in under-
+water acoustic communications as an ideal solution. In [7],
+it demonstrates the superiority of cooperative underwater
+acoustic communication systems over the point-to-point sys-
+tems, and they meet the requirements of UW-ASNs. For
+the cooperative communications, the design of relay strat-
+egy is crucial, and lots of schemes have been studied, such
+as amplify-and-forward (AF), decode-and-forward (DF) and
+compression-and-forward (CF) [8], [9]. Especially, dynamic
+coded cooperation (DCC) [10][12] has been proposed by
+investigating the combination of coding and relay cooper-
+ation. In [13], we proposed orthogonal-frequency-division
+multiplexing (OFDM) modulated DCC for three-node under-
+water acoustic cooperative networks, where the relay node
+can randomly access the point-to-point transmission proce-
+dure and enhance the communications by exploiting the ben-
+et of rate-compatible coding. As shown in [13], signicant
+gain was achieved by DCC in underwater acoustic channels,
+and therefore it is a promising technique in the design of
+future UW-ASNs. However, in adverse channel conditions,
+the existing DCC protocols require the cooperative node to
+retransmit the data with feedback signal in each hop. Once in
+the multi-hop scenario of UW-ASNs, this will result in an
+accumulative effect of end-to-end delay due to the request
+time for retransmission in each hop. Hence there still exists
+serious end-to-end delay problems in the DCC protocol [14]
+when further applied to the multi-hop UW-ASNs. In order to
+reduce the end-to-end delay and make DCC more suitable for
+the multi-hop scenario, in this paper we propose an improved
+scheme based on the DCC protocol, called Selective Dynamic
+Coded Cooperation (S-DCC) protocol as the relay strategy for
+multi-hop UW-ASNs.
+The main contributions of this paper are as bellow:
+1) Presenting an improved scheme named S-DCC based on
+the DCC protocol. In the proposed protocol, the cooperative
+nodes retransmit blocks actively and redundantly, and the
+receiver nodes selectively receive and deal with these blocksaccording to its instant decoding results. Hence the waiting
+time of feedback signal sent by the receiver to the cooperative
+node can be used for the redundant blocks' transmission,
+although they might not be adopted for dynamic decoding
+eventually. In other words, since the request time for retrans-
+mission is eliminated, S-DCC can drastically shorten the
+overall transmission time for the multi-hop UW-ASNs system
+compared with the existing DCC protocols.
+In addition, the main idea of Cooperative Hybrid Auto-
+matic Repeat reQuest (C-HARQ) protocol for UW-ASNs
+in [15] is to retransmit the erroneous part instead of entire
+packet to reduce the delay from the cooperative node, which
+essentially merges Cooperative ARQ (C-ARQ) with a Hybrid
+ARQ (HARQ) technique. Yet it does not concern the DCC
+protocol or S-DCC protocol. Instead of retransmitting the
+erroneous part packet , the cooperative node transmits part of
+thepartial coded packet in DCC or S-DCC protocol, where
+thepartial coded packet can be arbitrarily added to the
+received data as a whole codeword for decoding, so as to
+utilize the benets of both the broadcasting listening and
+cooperation phases. More details about the design of C-ARQ,
+HARQ and C-HARQ in underwater acoustic channels can be
+found in [15].
+2) Investigating the delay-energy relationship in multi-hop
+UW-ASNs for both S-DCC and DCC protocols. We com-
+pare the outage probability, end-to-end delay and energy
+consumption of the S-DCC, DCC, C-ARQ protocols and
+the conventional stop and wait ARQ (S&W ARQ) proto-
+col in the multi-hop UW-ASNs. Simulation results show
+that, the proposed S-DCC scheme can achieve decent outage
+performance and reduce end-to-end delay effectively with-
+out extra energy consumption, compared with other existing
+schemes. The proposed S-DCC scheme is a feasible coop-
+erative strategy for low transmission Signal to Noise Ratio
+(SNR). The sea test data are adopted to further verify the
+conclusions.
+3) Given the target performance, e.g., the outage prob-
+ability of the multi-hop UW-ASNs system Pout10 2,
+we study the performances with different maximum numbers
+of retransmissions and block sizes of data burst for both
+S-DCC and DCC protocols, which will help the design and
+application of the proposed scheme in practice.
+The rest of this paper is organized as follows. In Section II,
+the network topology of multi-hop UW-ASNs, underwater
+acoustic channels and energy consumption for underwater
+acoustic transmission are introduced. Section III presents
+the proposed S-DCC protocol in detail, including its end-to-
+end delay and energy consumption for multi-hop UW-ASNs
+system. Simulation and experimental results are presented in
+Section IV and V, respectively. Finally, Section VI concludes
+this paper.
+II. SYSTEM MODEL
+In this section, we present the network topology and under-
+water energy consumption model. Table 1 summarizes key
+symbols used throughout the paper.
+VOLUME 7, 2019 70553
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+TABLE 1. List of key symbols.
+A. NETWORK TOPOLOGY
+As shown in Fig. 1, we consider a cooperative Nh-hop
+UW-ASN consisting of the source node S, Nh-1 relay
+nodes, and the destination node D, with several coopera-
+tive nodes among them. The relay can be expressed as Ri
+(iD1;2;Nh 1), and the cooperative node is written as
+Ci(iD1;2,Nh).
+We have adopted the following assumptions for each hop
+transmission in the network:
+1) Nodes are in half-duplex where nodes cannot transmit
+and receive data at the same time;
+2) As the focuses are primarily on the ARQ issues,
+we assume that all the medium access control issues
+have been resolved. Therefore, the so-called source-relay-
+destination three nodes in each hop are actually upgraded as
+Ri 1-Ci-Riin the multi-hop UW-ASNs scenario. Further, it's
+assumed that, the transmission of Ri 1can only be received
+by the two neighboring relay nodes, i.e., RiandRi 2; and
+FIGURE 1. ANh-hop cooperative network adopting the coded
+cooperation scheme.
+the transmission of the cooperative node Cican only be
+heard by the neighboring relay nodes Ri 1andRi. With this
+assumption, the data transmission in one hop will not affect
+the next hop;
+3) The transmission path is predetermined by the optimal
+routing algorithm for a given S-D pair, and in each hop,
+the best node can be selected as the cooperative node in the
+candidate nodes. The designs of optimal routing algorithm,
+including the selection of relay nodes Ri(iD1;2;:::; Nh 
+1) and cooperative nodes Ci(iD1;2;:::; Nh 1), are beyond
+the scope of this paper.
+According to the above assumptions, since each hop con-
+sisting of source-relay-destination 3 nodes is predetermined
+in the multi-hop network, and the transmission in each hop
+will not be received by the next hop, the data transmission is
+indeed carried out strictly hop by hop. In this case, there is no
+impact between the transmission inside different hops, and
+the performance analysis of the energy consumption, delay,
+and outage probability for the whole network can be divided
+into independent hops. The energy consumption and end-
+to-end delay of the multi-hop network are the summation
+of the energy consumption and transmission delay inside
+each hop, while the outage probability is calculated based
+on the fact that the network will be outage if any one hop is
+outage.
+For the convenience of illustration, a linear uniform multi-
+hop network [3] is shown in Fig. 1, in which the distance of
+each hop is d/Nh, where dis the distance between S and D.
+However, the following discussions in this paper, including
+the analysis on energy consumption, end-to-end delay and
+outage probability performances are still valid for network
+topologies other than linear, or for the case of different dis-
+tances between the hops, as long as the above assumptions
+are satised.
+B. UNDERWATER ENERGY CONSUMPTION MODEL
+Usually, underwater acoustic data transmission can be
+described by the passive sonar equation. Then the SNR at the
+receiver can be presented as follows [3],
+SNRDSL TL NLCDI; (1)
+where SL;TL;NLandDIare, in dB, the source level, trans-
+mission loss, noise level and directivity index respectively.
+When adopting omnidirectional hydrophones, the directivity
+index is set as 0.
+70554 VOLUME 7, 2019
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+For a transmission distance din meter and frequency fin
+kHz, the transmission loss TL is given by [16]
+TLDk10 log10.d/C.f/d10 3; (2)
+where the rst term is the spreading loss with krepresents
+the the spreading factor, and the second term is the absorption
+loss with.f/represents the absorption coefcient in dB/km.
+Commonly, the spreading factor kcan be set as 1.5 in practi-
+cal spreading for underwater acoustic transmission. Follow-
+ing Thorp's formula [17], the absorption coefcient is V
+(f)D0:11f2
+1Cf2C44f2
+4100Cf2C2:7510 4f2C0:003:(3)
+The ocean ambient noise is modeled by Gaussian statis-
+tics and the Power Spectral Density (PSD). Four different
+noise sources are usually considered: turbulence, shipping,
+waves and thermal noise. Their strength can be respectively
+expressed as (in dB re Pa per Hz) [3]
+NLtD10 log Nt.f/D17 30 log f
+NLsD10 log Ns.f/D40C20.s 0:5/
+C26 log f 60 log.fC0:03/
+NLwD10 log Nw.f/D50C7:5w.1=2/
+C20 log f 40 log.fC0:4/
+NLthD10 log Nth(f)D 15C20 log f; (4)
+where sis the shipping activity factor, wis the wind speed
+in m/s. Dene NLi.f/(i2N Dft;s;w;thg), then the total
+noise isV
+N.f/DNt.f/CNs.f/CNw.f/CNth.f/: (5)
+Expressed in dB, that is
+NLD10 log N(f)D10 logX
+i2N 10NLi/10: (6)
+From (1), obviously, for a given receiver SNR 0with known
+TLandNL, the energy consumption at the transmitter can
+be calculated from the source level SL. And the SLis given
+by [16]
+SLD10 log10It
+Iref; (7)
+where Itis the intensity of the sound emitted by the transmit-
+ter, and the reference intensity Irefin underwater sound [16]
+is usually the intensity of a plane wave having an root-
+mean-square pressure equal to 1 Pa, denoted as Iref
+0:66710 18W/m2. That is related to the effective sound
+pressure, the density of sea water, and the propagation veloc-
+ity of sound wave cin sea water. Without loss of generality,
+we assume a constant speed of cD1500 m/s.
+In the case of cylindrical spreading, the power Ptrequired
+to achieve intensity Itat 1 meter from the source in the
+direction of the receiver is [17]:
+PtD2zIt; (8)
+where Ptis in watt and zis the water depth in meter.According to (1), (2), (6), (7) and (8), with the optimal
+frequency f0for a given d, the power Ptcan be expressed
+as
+PtD2z0Iref10TLCNLCSNR0
+10jfDf0; (9)
+where SNR 0andz0are the corresponding SNR and zin
+practical design when operating on the optimal frequency f0.
+For the commercial hydrophone [18], it consumes about
+one fth of the transmitted energy at the receiver for a packet.
+Then, the energy consumed at the transmitter Etand the
+receiver Ercan be written as
+EtDPtl
+bDPtTl; (10)
+ErD1
+5Et; (11)
+where lis the length of the packet in bits, bis the bit rate in
+bps,Tlis the time cost for transmitting lbits in second.
+III. THE PROPOSED S-DCC PROTOCAL FOR MUTI-HOP
+UW-ASNS
+A. SELECTIVE DYNAMIC CODED COOPERATIVE
+PROTOCOL
+Consider a burst-based transmission for the multi-hop UW-
+ASNs in the following discussion. Each burst consists of Nbl
+blocks, and we take the OFDM block as the example for
+analysis [14]. Over the Nblblocks, we use erasure-correction
+channel code for the inter-block encoding, which is the foun-
+dation for coded cooperation at relays.
+Before illustrating the S-DCC protocol, we rst briey
+introduce the conventional stop and wait ARQ (S&W
+ARQ) protocol, the cooperative ARQ (C-ARQ) proto-
+col and the dynamic coded cooperation (DCC) protocol
+in [13], [15], [19]. They are illustrated in Figs. 2 (a),
+(b) and (c) respectively, where the ( i-1)-th relay node
+Ri 1is the transmitter, and the i-th relay node R iis the
+receiver. In each ``R i 1-Ci-Ri'' transmission unit, when
+adopting the S&W ARQ protocol, the receiver will send a
+NAK signal to the transmitter for retransmission request if it
+cannot decode the blocks correctly, while it is to the coop-
+erative node when adopting the C-ARQ protocol. Therefore,
+the C-ARQ protocol can improve the transmission success
+rate since the cooperative node is located between the trans-
+mitter and receiver. In the meanwhile, it can reduce the end-
+to-end delay because both NAK signal and retransmission
+happen in a shorter distance, as shown in Fig. 2 (b). Further
+more, when adopting the DCC protocol, the cooperative node
+only retransmits part of blocks (say Nliblocks) instead of
+all the blocks (say Nblblocks) as shown in Fig. 2 (c) once
+retransmission occurs. It can further reduce the end-to-end
+delay because of the shorter retransmission time; meanwhile,
+theNliblocks can be added to the front of Ncoopblocks
+for joint decoding and it can improve the performance of
+decoding [13].
+However, in DCC protocol, after sending a NAK signal to
+the cooperative node C i, the receiver R istill needs to wait
+VOLUME 7, 2019 70555
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+FIGURE 2. Different cooperation schemes for each hop in multi-hop
+UW-ASNs: (a) Conventional stop and wait ARQ (S&W ARQ) protocol;
+(b) Cooperative ARQ (C-ARQ) protocol; (c) Dynamic Coded Cooperation
+(DCC) protocol; (d) Selective Dynamic Coded Cooperation (S-DCC)
+protocol.
+for the retransmission from node C i. Since both NAK signal
+and data retransmission still occupy extra time, the receiver
+is in idle in the Twaitperiod. To further eliminate this waiting
+time, we propose that the cooperative node C iretransmits the
+Nlilistening blocks immediately after the Ncoopcooperation
+blocks, and then the receiver R ican take different actions on
+these Nliblocks, depending on its instant decoding results.
+The proposed scheme can shorten the NAK signal's transmis-
+sion time, and especially it can observably shorten the overall
+end-to-end delay for the multi-hop UW-ASNs due to the
+accumulated benet. As the receiver selectively handles with
+the redundant Nliblocks, we name it as selective dynamic
+coded cooperative (S-DCC) protocol.
+For the S-DCC protocol, to get a reliable transmission in
+each hop, it works in the following steps.
+1) ACTIVE RETRANSMITTING BASED ON BURST
+TRANSMISSION: during the listening phase, the coopera-
+tive node C itry to carry out instantaneous decoding every
+time receiving one more block from node R i 1; immediately
+after the information bits within one burst are successfully
+recovered, say Nliblocks, the cooperative node C iregenerates
+the coded transmission blocks, say NcoopDNbl Nliblocks,
+and switches to cooperative phase and relays the data to
+node R i. After this, the cooperative node C iwill actively
+retransmits the rst Nliblocks following the Ncoopblocks
+under a given period of time, say Tdyna, as shown in Fig. 2 (d).
+2) SELECTIVE RECEIVING BASED ON JOINT
+DECODING: the receiver node R iwill rstly carry out jointdecoding by combining the Nblblocks from node R i 1with
+the last Ncoopblocks from cooperative node C i; if it is unable
+to decode correctly, the receiver node R iwill receive the
+following retransmitted Nliblocks from cooperative node C i,
+which can be added to the previously available Nblblocks for
+joint decoding; if the receiver decodes correctly, it will skip
+these retransmitted N liblocks and send ACK signal to the
+transmitter node R i 1.
+Note that the cooperative node can retransmit Nliblocks
+several times until reaching the given maximum retransmis-
+sion time. And the receiver may carry out joint decoding upon
+the received Nblblocks, Ncoopblocks and all the retransmit-
+tedNliblocks depending on the underwater acoustic chan-
+nel state. However, as the underwater acoustic modem is
+working on half-duplex mechanism, the cooperative node
+can not receive the ACK signal from the receiver during its
+retransmission of the Nliblocks to the receiver. Hence the
+retransmit time can not be set too large, which is determined
+by the underwater acoustic channel states, the length of the Nli
+blocks, and the distance between the cooperative node and the
+receiver node. We will adjust this parameter by simulation in
+the following.
+B. ENERGY CONSUMPTION
+The summation of the energy consumption in each hop can
+be described as
+EtotalDNhX
+iD1Ehop;i; (12)
+where Ehop;iis the energy consumed in the i-th hop. The
+energy consumed in transmitting and receiving one block is
+represented as Eblock
+tx andEblock
+rx respectively. When operating
+in the idle mode, the energy consumed is written as EIdle.
+Then we can further express the energy consumption as V
+Eblock
+txDPtTblock
+Eblock
+rxDPrTblock
+EIdleDPIdleTIdle; (13)
+where Pt,Pr,PIdle,Tblock andTIdleare the transmission
+power, reception power, idle mode operating power, block
+transmission time and idle mode operating time, respectively.
+Besides, the energy consumption of transmitting and receiv-
+ing an ACK or NAK signal can be expressed as EACK=NAK
+tx
+andEACK=NAK
+rx respectively. In this paper, we assume the
+duration and energy consumption of ACK are equal to those
+of the NAK because of the same length.
+Following Section II A, the analysis of the energy con-
+sumption of the whole network can be divided into each
+independent hop. For the i-th hop, i.e., the `` Ri 1-Ci-Ri'' unit
+in the multi-hop UW-ASNs scenario as shown in Fig. 2, the
+total energy consumption can be calculated as V
+Ehop;iDERi 1CECiCERi; (14)
+where ERi 1,ECiandERiare the energy consumed at trans-
+mitter node Ri 1, the cooperative node Ciand receiver node
+70556 VOLUME 7, 2019
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+Ri, respectively. In particular, we assume the transmitter node
+Ri 1transmits a packet comprising Nblblocks data for Tx
+times in total, invoking a total of Txcooperation processes in
+the cooperative node Ci, until the packet is successfully deliv-
+ered to the receiver node Ri; during each cooperation process,
+such as the Tx-th cooperation process, the cooperative node Ci
+retransmits Cxtimes of the Nliblocks, until the receiver node
+Risuccessfully decoded all the Nblblocks. When TxDuand
+CxDv, (14) can be written as
+Ehop;iTxDu
+CxDvDERi 1;iTxDu
+CxDvCECi;iTxDu
+CxDvCERi;iTxDu
+CxDv:
+(15)
+Furthermore, we dene Pr fTxDu;CxDvgto be the
+probability that for a successful delivery it takes TxDu
+times packet transmissions from the transmitter, and the
+nal delivery coming after CxDvtimes cooperation
+have been required, with u2f1;2;3;;1gandv2
+f0;1;2;;Mmaxg, where Mmaxrepresents the maximum
+transmission times of the cooperative node Ci. Let Ehop;i2
+ES DCC;i;EC ARQ;i;EDCC;i	
+denote three different proto-
+cols, then we have the nal expression of energy consumption
+asV
+Ehop;iD1X
+uD1MmaxX
+vD0Ehop;iTxDu
+CxDvPrfTxDu;CxDvg;(16)
+where Ehop;i2
+ES DCC;i;EC ARQ;i;EDCC;i	
+and
+Ehop;iTxDu
+CxDv
+2
+ES DCC;iTxDu
+CxDv;EC ARQ;iTxDu
+CxDv;EDCC;iTxDu
+CxDv
+;
+correspondingly.
+Now let's derive the energy consumption of S-DCC proto-
+colES DCC;irst. When TxDuandCxDv, the energy
+consumption of the transmitter node Ri 1to transmit Nbl
+blocks can be given by V
+ERi 1;iTxDu
+CxDvDuEdata
+txC.u 1/ENAK
+rxCEACK
+rxCuERi 1
+Idle
+Du
+NblEblock
+txCEACK=NAK
+rxCERi 1
+Idle
+(17)
+where Edata
+txis the energy consumption of transmitting the Nbl
+blocks data.
+Then, the energy consumption at the cooperative node Ci
+and receiver node Rican be similarly presented as V
+ECi;iTxDu
+CxDv
+Du
+NliEblock
+rxCNcoopEblock
+txCvNliEblock
+txCECi
+Idle
+(18)
+ERi;iTxDu
+CxDv
+Du
+NblEblock
+rxCvES DCC
+dynaCEACK=NAK
+txCERi
+Idle
+;(19)
+where
+ES DCC
+dynaD(
+NliEblock
+rx;jD0
+0; jD1(20)When jD0, it means that the receiver can not decode
+correctly after receiving Ncoopblocks and thus require the
+cooperative Nlidata blocks for joint decoding.
+Since the receiver node Rireceives the Nblblocks from the
+transmitter node Ri 1andNcoopblocks from the cooperative
+node Ciat the same time, and the duration time of Nblblocks
+is longer than that of Ncoopblocks, we can only calculate the
+duration time of Nblblocks in (19). That is why the energy
+consumption of receiving the Ncoopblocks do not show up
+in (19).
+Above all, plug (17), (18) and (19) into (15), for the S-DCC
+protocol in the i-th hop, we haveV
+ES DCC;iTxDu
+CxDv
+DERi 1;iTxDu
+CxDvCECi;iTxDu
+CxDvCERi;iTxDu
+CxDv
+Du8
+><
+>: 
+NblCNcoop
+Eblock
+txC.NliCNbl/Eblock
+rx
+Cv
+NliEblock
+txCES DCC
+dyna
+CEACK=NAK
+rxCEACK=NAK
+tx
+CERi 1
+IdleCECi
+IdleCERi
+Idle9
+>=
+>;
+(21)
+Similarly, for the other two cooperative protocols, we have
+(22) and (23), as shown at the top of the next page, where
+EDCC
+dynaD
+Eblock
+txCEblock
+rx
+NliCEACK=NAK
+txCEACK=ANK
+rx
+(24)
+Therefore, with (21), (22) and (23) in hand, we can use (16)
+to calculate the energy consumption for the three different
+protocols.
+C. END-TO-END DELAY
+Similar to the derivation of energy consumption, we will
+briey present the derivation of the end-to-end delay for the
+three different protocols in the following. The aggregated
+delay of each hop can be presented as
+TtotalDNhX
+iD1Thop;i (25)
+Due to the independence between hops, we focus on the
+delay analysis of one hop. For the i-th hop, the end-to-end
+delay comprising the propagation delay and the transmission
+latencyV
+Thop;iDTpro;iCTtra;i (26)
+where the propagation delay Tpro;iis related to the retrans-
+mission time, the end-to-end distance, the sound velocity in
+water, and different cooperation protocols. In each hop, let
+Tprobe equal to the relay-to-relay distance divided by the
+sound velocity in water for one transmission, i.e., TproD
+d
+Nhc. For the case of different distances between hops, Tpro
+andd/Nhshould be modied as Tpro;ianddi(the distance
+in the i-th hop), respectively. And Ttra;iis the transmission
+time of a burst packet in each hop. It is related to the block
+time duration and the number of blocks. Denote Tblas one
+VOLUME 7, 2019 70557
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+EC ARQ;iTxDu
+CxDvDu8
+><
+>: 
+Eblock
+txC2Eblock
+rx
+NblCv 
+Eblock
+txCEblock
+rx
+Nbl
+CEACK=NAK
+txCEACK=NAK
+rx
+CEACK=NAK
+txCEACK=NAK
+rxCERi 1
+IdleCECi
+IdleCERi
+Idle9
+>=
+>;(22)
+E
+DCC;iTxDu
+CxDvDu2
+64 
+NblCNcoop
+Eblock
+txC.NblCNli/Eblock
+rx
+CvEDCC
+dynaCEACK=NAK
+txCEACK=NAK
+rx
+CERi 1
+IdleCECi
+IdleCERi
+Idle3
+75 (23)
+block time-duration, then TtraDNblTblfor one transmis-
+sion. Assume the ACK, NAK signal duration is Tck:In the
+following, let Thop;i2
+TC ARQ;i;TDCC;i;TS DCC;i	
+denote
+the delay corresponding to three different protocols.
+Dene TstrandTdecas the state transition delay, the node
+processing time, respectively. Synchronizing the reception
+blocks has been illustrated in [13]. Thus, according to Fig.2,
+letTxDuandCxDv, for the C-ARQ protocol, DCC
+protocol and S-DCC protocol, we can derive that
+TC ARQ;iTxDu
+CxDv
+Du2TproCTtraCv 
+TproCTtraCTckC2Tstr
+CTckC2Tstr
+(27)
+TDCC;iTxDu
+CxDv
+Du2TproCTtraCv 
+TproCTdynaCTckC2Tstr
+CTckC2Tstr
+(28)
+TS DCC;iTxDu
+CxDv
+Du2TproCTtraCv 
+TdynaCTdec
+CTckC2Tstr
+(29)
+where Tdynais the dynamic transmission time for the coop-
+erative node to retransmit the blocks in the DCC or S-DCC
+protocol, and can be expressed as
+TdynaDNliTbl (30)
+Introducing the PrfTxDu;CxDvg, we have the nal
+expression of end-to-end delay as
+Thop;iD1X
+uD1MmaxX
+vD0Thop;iTxDu
+CxDvPrfTxDu;CxDvg(31)
+where Thop;i2
+TC ARQ;i;TDCC;i;TS DCC;i	
+and
+Thop;iTxDu
+CxDv
+2
+TC ARQ;iTxDu
+CxDv;TDCC;iTxDu
+CxDv;TS DCC;iTxDu
+CxDv
+;
+correspondingly.
+The theoretical calculation of Pr fTxDu;CxDvgis
+beyond the scope of this paper, hence computer simulations
+are used instead.IV. NUMERICAL RESULTS
+A. SIMULATION SETUP
+For the Nh-hop UW-ASNs network, let NhD5, and the
+distance in each hop is d/NhD2 km. In each burst packet,
+let the transmission data burst size be NblD20 blocks
+coded over IblD10 information blocks, then the information
+rate is rD0:5 bit/symbol. The OFDM parameters of the
+transmitter are the same as those in [20], such as subcarrier
+number KD1024, center frequency fcD10 kHz. We use
+the quasi-static fading underwater acoustic channel model,
+where the multi-path channels are randomly generated with
+50 taps in the baseband [2], [14]. Without loss of generality,
+in the `` Ri 1-Ci-Ri'' unit, we set the transmission times of
+Ri 1is only once, and the maximum number of transmissions
+of the cooperative node Ciis also one during the simulation,
+i.e.,fu;MmaxgDf 1;1g. This is the general parameter setting
+except during the study of impact of different Mmaxvalues.
+In addition, to evaluate the energy consumption and end-to-
+end delay, we use Monte Carlo method to obtain the results
+according to (12) and (25).
+Instead of a practical code, we assume the erasure-
+correction codes are capacity-achieving codes thus the mutual
+information (MI) can be adopted to calculate the outage
+probability of the transmission, which can indicate whether
+a packet can be decoded correctly at the receiver. For
+the node-to-node transmission with KOFDM sub-carriers,
+an outage occurs if the total MI at the destination is
+lower than the information rate r, which can be expressed
+asV
+PoutDPrfMI<rg
+DPr8
+<
+:1
+KK/2 1X
+kD K/2log2
+1CjH[k]j2Es
+N0
+<r9
+=
+;;
+(32)
+where H[k] is the channel complex equivalent factor at
+thek-th subcarrier, and Es
+N0is the SNR at the receiver
+node.
+Specically, for the S-DCC protocol, in the i-th hop,
+the outage probability can be calculated in (33), as shown at
+the bottom of the next page where Hsddenotes the channel
+frequency response between the source and the destination,
+Hrddenotes the channel frequency response between the
+cooperative node and the destination, and jD0 or 1. When
+jD0;it regresses to DCC protocol; when jD1, it means that
+70558 VOLUME 7, 2019
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+the receiver can not decode correctly after receiving Ncoop
+blocks and thus requires the cooperative Nlidata blocks for
+joint decoding.
+In the multi-hop network where the information is trans-
+mitted hop by hop and the signal transmission in one hop
+will not affect the other hops, each hop will have independent
+probability of outage and the network outage will happen if
+any hop is outage. Then the outage probability of the whole
+Nh-hop system is
+Pout
+S DCCD1 NhY
+iD1 
+1 Pout
+S DCC;i
+(34)
+B. SIMULATION RESULTS
+1) IMPACT OF DIFFERENT PROTOCOLS
+Fig. 3 (a) demonstrates the overall outage probability of
+S-DCC protocol and other protocols. We can see that the
+proposed S-DCC protocol is slightly better than C-ARQ
+protocol and overlaps with DCC protocol, and all of them
+outperform the S&W ARQ protocol. As shown in Fig. 3(b),
+the proposed S-DCC protocol has the minimum end-to-end
+delay among these protocols. Especially, for Pout10 2
+(P
+2
+wD47 48dB, where P
+2
+wVD SL NLis
+the transmission SNR in dB), the performance of end-to-
+end delay of S-DCC is better than that of DCC because of
+the new retransmission mechanism for S-DCC. Specically,
+the S-DCC protocol can eliminate the feedback signal from
+theRinode to Cinode and hence reduces the overall end-
+to-end delay in retransmission. However, performances of
+S-DCC and DCC become close at high transmission SNR
+region, and this is because no more retransmissions are
+needed for both of them as the transmission SNR increases.
+Therefore, the proposed S-DCC protocol can achieve good
+outage performance while reducing the end-to-end delay,
+relative to existing protocols. Since (A) the outage perfor-
+mance of S&W ARQ protocol is much worse than the other
+three cooperative protocols, which is extremely detrimental
+to the multi-hop UW-ASNs scenario. And all the cooperative
+protocols should have the same energy consumption and time
+delay happened in the cooperative node selection stage; (B) in
+a relative static network (as required by DCC, because it
+needs the exact distance information between the 3 nodes),
+the energy consumption and time delay happened in the coop-
+erative node selection stage should be insignicant compared
+with the data transmission, we will skip S&W ARQ and will
+not include the energy consumption and time delay happened
+in the cooperative node selection stage. Instead, we focus on
+FIGURE 3. Performance comparison of several network schemes:
+(a) Overall outage probability; (b) End-to-end delay.
+the comparison of the three cooperative protocols in the data
+transmission in the following discussions.
+To clearly understand energy consumption of the three
+cooperative protocols, Fig. 4 (a) shows the energy con-
+sumption results. It can be found that in the low trans-
+mission SNR region (46-48 dB), the energy consumption
+of S-DCC is slightly lower than the other two protocols,
+but with the increase of transmission SNR, the energy con-
+sumption of S-DCC increases more than DCC. This is
+because that the receiver only needs one transmission to
+successfully decode the information without the coopera-
+tive node's retransmission at high SNR region. Hence for
+the S-DCC, the receiver does not use the extra Nliblocks
+transmitted by cooperative node, causing additional energy
+consumption.
+Pout
+S DCC;iDPrfMI<rg
+DPr8
+<
+:1
+KkDK/2 1X
+kD K/2Nbllog2 
+1CjHsd[k]j2Es
+N0
+CNcooplog2 
+1CjHsd[k]CHrd[k]j2Es
+N0
+CjNlilog2 
+1CjHrd[k]j2Es
+N0
+<rNbl9
+=
+;;
+(33)
+VOLUME 7, 2019 70559
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+FIGURE 4. Energy consumptions of several cooperative schemes:
+(a) Energy consumption; (b) Energy consumption comparison.
+Set the target outage probability of the three cooperative
+protocols to be Pout10 2, the corresponding transmission
+SNR is about 48 dB according to Fig. 3 (a). Fig. 4 (b) shows
+the comparison of energy consumptions at the transmission
+SNR around 48 dB. When meeting the outage probability
+demand, the energy consumption of S-DCC is more econom-
+ical than the other two schemes at low transmission SNR
+region.
+2) IMPACT OF COOPERATIVE TRANSMISSION TIMES
+In (16) and (31), let Mmax2f1;2;3;4g,uD1, then the
+maximum number of cooperative node transmission times is
+between 1 and 4. To analyze the impact of maximum number
+of retransmissions, we should ensure that the link between the
+transmitter and the cooperative node cannot be interrupted.
+Therefore the cooperative node is closer to the transmitter
+than to the receiver in each hop. As shown in Fig. 5(a),
+with the maximum number of retransmissions increasing,
+the possibility of the receiver decodes correctly increases.
+Specically, the cases of MmaxD2 and MmaxD3 have
+about 0.5 dB and 0.7 dB gain, respectively, compared with
+MmaxD1. The overall outage probability of MmaxD3
+andMmaxD4 is similar. Thus, the outage probability will
+FIGURE 5. The impact of the maximum number of retransmissions on
+system performance: (a) Overall outage probability; (b) End-to-end
+delay; (c) Energy consumption.
+not increase innitely with the maximum number of retrans-
+missions increasing. In addition, both S-DCC and DCC have
+similar overall outage probability under the same setting of
+maximum number of retransmissions.
+Set the target outage probability to be Pout10 2,
+the end-to-end delay and the energy consumption of these
+two schemes are shown in Fig. 5 (b) and Fig. 5 (c). From
+Fig. 5 (b), we can see that with the number of retransmissions
+increasing, the end-to-end delay of DCC or S-DCC increases
+70560 VOLUME 7, 2019
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+FIGURE 6. The impact of data burst size on system performance:
+(a) End-to-end delay; (b) Energy consumption.
+slightly, and the end-to-end delay of S-DCC is always less
+than that of DCC. From Fig. 5 (c), the energy consumption
+of S-DCC increases with the number of retransmissions,
+while the case for DCC is the opposite. When MmaxD1,
+the energy consumption of S-DCC is slightly smaller than
+the DCC, but when MmaxD2, the energy of S-DCC is
+consumed by more than 10% compared with DCC. This is
+because at high transmission SNR region, DCC only requests
+retransmission from the cooperative node as needed, while
+S-DCC may retransmit unnecessary cooperative blocks with-
+out considering the receiver's decoding results and result in
+the energy waste. Therefore, at the high transmission SNR
+region, MmaxD1 is usually enough for S-DCC protocol.
+3) IMPACT OF DATA BURST SIZE
+Next, we investigate the impact of the data burst size in unit
+of block on the end-to-end delay and energy consumption
+for DCC and S-DCC, where the information rate is xed
+at 0.5 bit/symbol. The results with target outage probability
+performance are shown in Fig. 6. We can see that S-DCC
+still outperforms DCC for any size setting of data block. This
+is because in S-DCC, limited direct retransmission of the
+cooperative blocks eliminates the waiting time of the receiver,
+and less transmission of feedback signal reduces the energy
+consumption.
+FIGURE 7. Sea test data of underwater acoustic channel for the Xiamen
+Wuyuan Bay: (a) The sound speed profile; (b) Channel impulse
+response.
+V. EXPERIMENTAL RESULTS
+To further test the performance of S-DCC, the test data from
+Xiamen Wuyuan bay on May 8, 2014, which lies in the
+northern part of Xiamen, Fujian, China, are used to set up
+the underwater acoustic channel model. The depth of the
+transmitter and the receiver is 3 m and 4 m, respectively.
+The distance between them is 903 m. The detection signal
+is the LFM signal, whose duration is 24 ms and frequency
+range is 20-22 kHz. The sampling frequency is 80 kHz, and
+there is a 12 ms guard interval after detection signal. Fig. 7
+(a) shows the sound speed prole of Xiamen Wuyuan Bay,
+Fig. 7 (b) presents the channel impulse response of Wuyuan
+Bay underwater acoustic channel, which have 8 multi-paths
+and the maximum delay is approximately 12.5 ms. The results
+are tested in level 3 sea state.
+Table 2 shows the performance comparison of these three
+protocols for Wuyuan Bay sea test channel. As expected,
+the S-DCC outperforms both C-ARQ and DCC protocols at
+lower transmission SNR region (the cases of 39.96 dB and
+40.96 dB). As the transmission SNR increases (the cases
+of 41.96 dB and 42.96 dB), once the decoding on the receiver
+does not need the cooperative node's retransmission anymore,
+S-DCC does not have the advantage in end-to-end delay,
+and its energy consumption is increasing rapidly. This is
+consistent with the previous analysis.
+VOLUME 7, 2019 70561
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+TABLE 2. Results based on sea test data channel.
+VI. CONCLUSION
+In this paper, we investigate the improved dynamic coded
+cooperative protocol named as S-DCC for multi-hop
+UW-ASNs in terms of end-to-end delay and energy con-
+sumption. Compared with S&W ARQ, C-ARQ and DCC
+protocols, numerical results show that the proposed S-DCC
+protocol can achieve decent outage performance while reduc-
+ing end-to-end delay by selective cooperation, without extra
+energy consumption. Particularly, the S-DCC is a feasible
+cooperative strategy for low transmission SNR cases.
+ACKNOWLEDGMENT
+The authors would like to thank Mr. Shenqin Huang and
+Mr. Jianming Wu from Xiamen University for their contri-
+butions to the discussion of this research. Key Laboratory of
+Underwater Acoustic Communication and Marine Informa-
+tion Technology and Shenzhen Research Institute of Xiamen
+University contributed equally to this work.
+REFERENCES
+[1] S. M. Ghoreyshi, A. Shahrabi, T. Boutaleb, and M. Khalily, ``Mobile data
+gathering with hop-constrained clustering in underwater sensor networks,''
+IEEE Access , vol. 7, pp. 2111821132, 2019.
+[2] S. Jiang, ``On reliable data transfer in underwater acoustic networks:
+A survey from networking perspective,'' IEEE Commun. Surveys Tuts. ,
+vol. 20, no. 2, pp. 10361055, 2nd Quart. 2018.
+[3] W. Zhang, M. Stojanovic, and U. Mitra, ``Analysis of a linear multi-
+hop underwater acoustic network,'' IEEE J. Ocean. Eng. , vol. 35, no. 4,
+pp. 961970, Oct. 2010.
+[4] M. Stojanovic, ``On the relationship between capacity and distance in an
+underwater acoustic communication channel,'' ACM SIGMOBILE Mobile
+Comput. Commun. Rev. , vol. 11, no. 4, pp. 3443, Oct. 2007.
+[5] M. Zorzi, P. Casari, N. Baldo, and A. F. Harris, ``Energy-efcient routing
+schemes for underwater acoustic networks,'' IEEE J. Sel. Areas Commun. ,
+vol. 26, no. 9, pp. 17541766, Dec. 2008.
+[6] M. Felemban and E. Felemban, ``Energy-delay tradeoffs for underwater
+acoustic sensor networks,'' in Proc. 1st Int. Black Sea Conf. Commun.
+Netw. (BlackSeaCom) , Jul. 2013, pp. 4549.
+[7] S. Al-Dharrab, M. Uysal, and T. M. Duman, ``Cooperative underwa-
+ter acoustic communications,'' IEEE Commun. Mag. , vol. 51, no. 7,
+pp. 146153, Jul. 2013.[8] G. Al-Habian, A. Ghrayeb, M. Hasna, and A. Abu-Dayya, ``Threshold-
+based relaying in coded cooperative networks,'' IEEE Trans. Veh. Technol. ,
+vol. 60, no. 1, pp. 123135, Jan. 2011.
+[9] Q. Li, S. Ting, and C. K. Ho, ``A joint network and channel coding strategy
+for wireless decode-and-forward relay networks,'' IEEE Trans. Commun. ,
+vol. 59, no. 1, pp. 181193, Jan. 2011.
+[10] J. Castura and Y. Mao, ``Rateless coding for wireless relay channels,''
+IEEE Trans. Wireless Commun. , vol. 6, no. 5, pp. 16381642, May 2007.
+[11] K. Kumar and G. Caire, ``Coding and decoding for the dynamic decode
+and forward relay protocol,'' IEEE Trans. Inf. Theory , vol. 55, no. 7,
+pp. 31863205, Jul. 2009.
+[12] K. Ishibashi, K. Ishii, and H. Ochiai, ``Dynamic coded cooperation using
+multiple turbo codes in wireless relay networks,'' IEEE J. Sel. Topics Signal
+Process. , vol. 5, no. 1, pp. 197207, Feb. 2011.
+[13] Y. Chen, Z.-H. Wang, L. Wan, H. Zhou, S. Zhou, and X. Xu,
+``OFDM-modulated dynamic coded cooperation in underwater acous-
+tic channels,'' IEEE J. Ocean. Eng. , vol. 40, no. 1, pp. 159168,
+Jan. 2015.
+[14] Y. Chen, X. Xu, S. Zhou, H. Su, and L. Zhang, ``Dynamic coded coop-
+erative ARQ for multi-hop underwater acoustic networks,''in Proc. IEEE
+OCEANS TAIPEI , Apr. 2014, pp. 15.
+[15] A. Ghosh, J.-W. Lee, and H.-S. Cho, ``Throughput and energy efciency
+of a cooperative hybrid ARQ protocol for underwater acoustic sensor
+networks,'' Sensors , vol. 13, no. 11, pp. 1538515408, Nov. 2013.
+[16] R. J. Urick, Principles of Underwater Sound . Los Altos, CA, USA:
+Peninsula Pub, 1983.
+[17] L. M. Brekhovskikh and Y. P. Lysanov, Fundamentals of Ocean Acoustics .
+New York, NY, USA: Springer, 1982.
+[18] (2007). LINKQUEST INC. Underwater Acoustic Modem . [Online].
+Available: http://www.linkquest.com
+[19] J.-W. Lee and H.-S. Cho, ``A cooperative ARQ scheme for multi-hop
+underwater acoustic sensor networks,'' in Proc. IEEE Symp. Underwater
+Technol. Workshop Sci. Submarine Cables Rel. Technol. (SSC) , Tokyo,
+Japan, Apr. 2011, pp. 14.
+[20] H. Yan et al. , ``DSP based receiver implementation for OFDM acoustic
+modems,'' Phys. Commun. , vol. 5, no. 1, pp. 2232, Mar. 2012.
+YOUGAN CHEN (S'12M'13) received the
+B.S. degree in communication engineering from
+Northwestern Polytechnical University (NPU),
+Xi'an, China, in 2007, and the Ph.D. degree in
+communication engineering from Xiamen Univer-
+sity (XMU), Xiamen, China, in 2012.
+He visited the Department of Electrical and
+Computer Engineering, University of Connecti-
+cut (UCONN), Storrs, CT, USA, from 2010 to
+2012. He has been an Assistant Professor with
+the Department of Applied Ocean Physics and Engineering, XMU, since
+2013. His research interests include communications and signal processing,
+currently focusing on channel coding and cooperative communications for
+underwater acoustic channels.
+Dr. Chen has served as the Technical Reviewer for many journals and
+conferences, such as the IEEE J OURNAL OF OCEANIC ENGINEERING , the IEEE
+TRANSACTIONS ON COMMUNICATIONS , the IEEE A CCESS ,Sensors ,IET Communi-
+cations , and ACM WUWNet Conference. He has been appointed to a 3-year
+term as Associate Editor in IEEE Access effective May 2019. He served as a
+Secretary for the IEEE ICSPCC 2017. He received Technological Invention
+Award of Fujian Province, China, in 2017.
+XIAOTING JIN received the B.S. degree in marine
+technology and the M.S. degree in marine physics
+from Xiamen University (XMU), Xiamen, China,
+in 2014 and 2017, respectively. She was with
+XMU, and is currently with the Fujian Provincial
+Department of Ocean and Fisheries. Her research
+interests include channel coding, cooperative com-
+munications for underwater acoustic channels, and
+wireless communication and navigation for shing
+vessel.
+70562 VOLUME 7, 2019
+
+Y. Chen et al.: S-DCC Communications for Multi-Hop UW-ASNs
+LEI WAN (M'18) received the B.S. degree in
+electronic information engineering from Tianjin
+University (TJU), Tianjin, China, in 2006, the M.S.
+degree in signal and information processing from
+the Beijing University of Posts and Telecommu-
+nications (BUPT), Beijing, China, in 2009, and
+the Ph.D. degree in electrical engineering from
+University of Connecticut (UCONN), Storrs, CT,
+USA, in 2014.
+He is currently an Associate Professor with the
+College of Underwater Acoustic Engineering, Harbin Engineering Univer-
+sity (HEU), Harbin, China. His research interests include the algorithm
+design, system development, and performance analysis for high speed under-
+water acoustic communication systems.
+Dr. Wan has served as the Technical Reviewer for many journals and
+conferences. He received the IEEE Communications Society's Exemplary
+Reviewer Award for the IEEE C OMMUNICATIONS LETTERS , in 2013.
+XIAOKANG ZHANG received the B.S. and Ph.D.
+degrees in marine physics from Xiamen University
+(XMU), Xiamen, China, in 2005 and 2010, respec-
+tively. From 2010 to 2012, he was a Postdoctoral
+Research Associate with the Center of Environ-
+mental Science and Engineering, XMU. He has
+been a Senior Engineer with the Department of
+Applied Marine Physics and Engineering, XMU,
+since 2012. His research interest includes under-
+water acoustic communications.
+XIAOMEI XU received the B.S., M.S., and Ph.D.
+degrees in marine physics from Xiamen University
+(XMU), Xiamen, China, in 1982, 1988, and 2002,
+respectively.
+She was a Visiting Scholar with the Depart-
+ment of Electrical and Computer Engineering,
+Oregon State University, Corvallis, OR, USA,
+from 1994 to 1995. She visited the Department of
+Electrical and Computer Engineering, University
+of Connecticut (UCONN), Storrs, CT, USA, as a
+Senior Visiting Scholar, in 2012. She is currently a Full Professor with the
+Department of Applied Marine Physics and Engineering, XMU. Her research
+interests include marine acoustics, underwater acoustic telemetry and remote
+control, underwater acoustic communication, and signal processing.
+VOLUME 7, 2019 70563
+
