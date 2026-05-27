@@ -16,9 +16,9 @@ BITS_PER_CHUNK = 80
 CHUNKS_SYS     = 100
 CHUNKS_PARITY_MAX = 90
 TX_POWER_W     = 15.0
-TARGET_MI      = 8000.0
-MAX_HOP_RETRYS     = 12
-MAX_MERGE_ATTEMPTS = 24
+TARGET_MI      = 25000.0
+MAX_HOP_RETRYS     = 20
+MAX_MERGE_ATTEMPTS = 40
 T_MAX_WINDOW    = 1.5
 T_PROTECTION_GAP = 0.2
 W1, W2, W3 = 0.40, 0.25, 0.35
@@ -336,14 +336,15 @@ class UnderwaterNode:
                     else:
                         self.tx_queue.put((pid, pkt.creation_time))
                 else:
-                    # --- S&W / CARQ: MI直接判断 + 尾部概率分集 ---
+                    # --- S&W / CARQ: MI直接判断 + 逻辑尾部概率（σ = TARGET/5）---
                     if self.protocol in (PROTO_SW_ARQ, PROTO_CARQ):
                         mi_curr = np.sum(np.log2(1.0 + self.soft_buffer[pid][0:100])) * BITS_PER_CHUNK
                         if mi_curr >= TARGET_MI:
                             is_ok = True
                         else:
                             deficit = TARGET_MI - mi_curr
-                            p_one = math.exp(-(deficit / 450.0) ** 2)
+                            sigma = TARGET_MI / 5.0
+                            p_one = 1.0 / (1.0 + math.exp(deficit / sigma))
                             succ_prob = 1.0 - (1.0 - p_one) ** max(self.merge_count[pid], 1)
                             is_ok = (random.random() < succ_prob)
                     else:
@@ -724,7 +725,7 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 # 10. 主程序
 # ==========================================
 if __name__ == "__main__":
-    SNR_LIST   = [0, 1, 2, 3, 4, 5, 6, 9, 12, 15]
+    SNR_LIST   = [0, 3, 6, 9, 12, 15, 18, 21]
     SIM_TIME   = 20000
     N_RUNS     = 4
 
