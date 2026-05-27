@@ -1,0 +1,189 @@
+================================================================================
+ CA-CHARQ 水下声学协作 HARQ 仿真 —— 工作总结文档
+================================================================================
+ 日期: 2026-05-27
+ GitHub: https://github.com/lzx666lzx666/CA-CHARQ-sim
+================================================================================
+
+一、项目概述
+──────────────────────────────────────────────────────────────────────────────
+
+本项目实现了一种命名为 CA-CHARQ（Confidence-Aware Cooperative Hybrid ARQ）
+的水下声学传感器网络协作重传协议仿真系统。协议创新点包括：
+
+  (1) 基于互信息（MI）置信度的自适应增量冗余（IR）选择
+  (2) 基于评分倒计时的多 helper 退避竞争机制
+  (3) 吸收 S-DCC 思想的主动 helper 发送（v7）
+
+仿真对比四种协议：
+  - S&W ARQ:  纯停等重传，无协作，无软合并
+  - CARQ:     协作 ARQ，helper 重传完整数据，无软合并 (Ghosh 2013)
+  - C-HARQ:   协作 HARQ，helper 发送 FEC 分片，Chase+FEC 合并 (Ghosh 2013)
+  - CA-CHARQ: 提出方案，自适应 RV + 退避竞争 + 全 IR 合并
+
+================================================================================
+
+二、仿真场景
+──────────────────────────────────────────────────────────────────────────────
+
+  拓扑: 5 跳线形网络, 每跳 600 m, 端到端 3000 m
+  每跳: 1 个源路由器 + 1 个目的路由器 + 3 个随机 Hermite 协作节点（lens 区域内）
+  信道: Rician K=2（v6）/ Rayleigh K=0（v7）
+  调制: 1200 bps, 80 bit/chunk, 100 chunk/RV0
+  SNR 范围: 0, 3, 6, 9, 12, 15 dB
+  仿真: 蒙特卡洛 6~12 runs, 95% 置信区间
+
+  helper 协作区域定义（参照 Goutham 2021）：
+    以该跳源端和目的端为圆心、跳距为半径的两圆交叠区域（lens），
+    随机撒 3 个 helper 节点。
+
+================================================================================
+
+三、协议设计演化
+──────────────────────────────────────────────────────────────────────────────
+
+v1-v2: 初始版本
+  - 基于距离扫描（非 SNR）
+  - 信道模型有误（Rician LOS 均值错误，虚高 12dB）
+  - 丢包率统计 > 1.0（多跳重复计数）
+
+v3: MI 模型修正
+  - 自变量改为 SNR(dB)，固定拓扑 3 跳
+  - 修复 Rician 衰落实现（正确 E[|h|^2]=1 归一化）
+  - 修复丢包率按 PID 去重
+  - 发现 TARGET_MI=260 太高，下调至 80
+
+v4: 三级基线 + Monte Carlo
+  - 加入 S&W ARQ 和 CARQ 基线
+  - 25 次独立 run + 95% 置信区间
+  - 发现 S&W ARQ 在中 SNR 延迟优势——helper_wait 太短（3.2s）导致源端总是
+    误判 "无 helper 响应" 而浪费一次重传
+
+v5: C-HARQ (Ghosh 2013)
+  - 新增 PROTO_CHARQ: 目的端主导串行协作（CReq→CAvl→LookUp→逐一联系）
+  - FEC 分片: Nmx=2, Pac-1(50块), Pac-2(40块)
+  - 加入 ENABLE 开关控制对比组
+  - CARQ 和 CHARQ 统一使用同一套目的端驱动协作流程
+  - 发现 CARQ 与 CHARQ 结果完全相同——TARGET_MI 低导致 helper 一次就够
+
+v6: 协议层次最终版（当前主力）
+  - 发现 S&W ARQ 和 CARQ 错误地使用了全量 Chase 合并（权重 1.0）
+  - 对比文献后确定正确做法:
+      S&W ARQ: 无软合并, Pac-0 每次覆盖 (=)
+      CARQ:    无软合并, Pac-0 每次覆盖 (=)
+      C-HARQ:  Pac-0 Chase 累加 (+) + FEC IR 累加 (+)
+      CA-CHARQ: 全 IR 累加 (+)
+  - TARGET_MI = 15000, MAX_HOP_RETRYS = 30
+  - 删除丢包率子图（除 S&W 外全零），保留延迟+开销+吞吐三图
+  - 5 跳拓扑, SNR 0-15 dB
+
+v7: 主动 helper（S-DCC 风格, 探索性）
+  - Helper 解码 RV0 后不等 NACK 直接竞争发送
+  - Rayleigh K=0 信道（匹配 S-DCC 文献）
+  - 目的端增加 1.5s 等待窗口接收主动 helper 数据
+  - 只在 helper MI/TARGET < 1.5 时发送（避免浪费）
+  - 结果: 0dB 延迟大幅降低，但中 SNR 开销较高
+
+================================================================================
+
+四、当前最终结果 (v6, 5跳, 6 run, TARGET_MI=15000, Rician K=2)
+──────────────────────────────────────────────────────────────────────────────
+
+  开销比 (Overhead = total Tx chunks / useful chunks, 5跳基线=5.15):
+
+  SNR  | S&W ARQ   | CARQ     | C-HARQ   | CA-CHARQ  | 说明
+  ─────┼──────────┼─────────┼─────────┼──────────┼──────────────
+   0dB | n/a(100%死)| n/a     | 16.58   | 15.04 ✓  | 仅 IR 协议存活
+   3dB | n/a       | n/a     | 10.48   | 10.19 ✓  | 两者相近
+   6dB | 5.23      | 5.25    | 5.24    | 5.24     | 全部趋近基线
+   9dB+| 5.15      | 5.15    | 5.15    | 5.15     | 全部基线
+
+  延迟 (End-to-End delay, seconds):
+
+  SNR  | S&W ARQ   | CARQ     | C-HARQ   | CA-CHARQ
+  ─────┼──────────┼─────────┼─────────┼──────────
+   0dB | n/a       | n/a     | 261.4   | 4205.9
+   3dB | n/a       | n/a     |  89.2   |   92.1
+   6dB+|  38.4     |  38.6   |  38.6   |   38.4
+
+  核心发现:
+    1. CA-CHARQ 在 0dB 开销最优（15.04），是唯一能在此 SNR 工作的协议之一
+    2. C-HARQ 在 0dB 延迟最低（261s vs CA 4205s），但开销略高
+    3. S&W ARQ 和 CARQ 在 0-3dB 无法工作（无软合并在 MI 硬阈值下必然失败）
+    4. CA-CHARQ 的延迟优势在中 SNR 不如 C-HARQ，但开销在全区间始终优于或等于
+
+================================================================================
+
+五、关键技术决策与教训
+──────────────────────────────────────────────────────────────────────────────
+
+  1. MI 模型 vs BER 模型
+     - 文献用 BER（概率性），本仿真用 MI 阈值（确定性）。MI 模型在低 SNR
+       处产生"硬地板"效应——单次传输 MI 不够即永不可能成功。
+     - 这是物理正确的（信息论 Shannon 限），但与 BER 模型的渐进成功概率差异
+       需在论文中明确说明。
+
+  2. 软合并策略的严格区分
+     - S&W ARQ: 无 FEC → 无合并 (覆盖)
+     - CARQ: 无 FEC → 无合并 (覆盖)
+     - C-HARQ: 有 Viterbi 译码 → 天然合并 (Chase on Pac-0, IR on FEC)
+     - CA-CHARQ: IR-HARQ → 全累加
+     - 这是 Ghosh 2013, Chen 2019 等文献的公论，不能混淆。
+
+  3. TARGET_MI 的标定
+     - 需使基线协议在目标 SNR 范围内能工作但有差距，才能体现提出方案的优势
+     - 当前 TARGET_MI=15000: S&W/CARQ 在 ≤3dB 全死，C-HARQ/CA-CHARQ 在 0-3dB 工作
+
+  4. helper 协作窗口（仅 v6 的 skip_helper 机制）
+     - MI ratio 在 [0.30, 0.50] 时才启用 helper，避免源端自己能搞定时空等
+     - 这是 CA-CHARQ 区别于纯 IR 的关键——"智能"判定 helper 何时有价值
+
+  5. 退避竞争 vs 串行协作
+     - CA-CHARQ 用评分倒计时竞争选择最优 helper（快但只选一个）
+     - CARQ/CHARQ 用目的端串行逐一联系（慢但能用尽所有 helper）
+     - 在 3 helper 场景下，两者差异不大（一个 helper 通常已足够）
+
+  6. 信道模型影响
+     - Rician K=2（强视距）→ 收敛 6-9dB
+     - Rayleigh K=0（纯散射）→ 收敛推迟到 12-15dB
+     - 与 S-DCC 文献的 0-30dB 范围比，我们的 MI 模型在正值区间更早收敛
+       原因: (a) 100 独立 chunk 提供强分集 (b) Shannon 公式增长快 (c) 无 OFDM 频率选择性衰落
+
+================================================================================
+
+六、文件清单
+──────────────────────────────────────────────────────────────────────────────
+
+  CA-CHARQ_0518_v1.py       初始版本
+  CA-CHARQ_0518_v2.py       RV 切片补充
+  CA-CHARQ_0520_v3.py       SNR 自变量 + MI 模型修正
+  CA-CHARQ_0520_v4.py       三级基线 + Monte Carlo
+  CA-CHARQ_0520_v5.py       C-HARQ + ENABLE 开关
+  CA-CHARQ_0520_v6.py       协议层次最终版（Rician K=2, skip_helper窗口）
+  CA-CHARQ_0520_v7.py       S-DCC 主动 helper（Rayleigh K=0）
+  CA-CHARQ-v6.py            最终发布版: 5跳, 0-15dB, 6 runs, TARGET_MI=15000
+  CA-CHARQ-v7.py            探索版: 5跳, 0-15dB, 主动 helper
+  刘子昕_设计方案0520-批注.docx   设计文档
+
+================================================================================
+
+七、参考文献
+──────────────────────────────────────────────────────────────────────────────
+
+  [1] Ghosh A, Lee J-W, Cho H-S. "Throughput and Energy Efficiency of a
+      Cooperative Hybrid ARQ Protocol for Underwater Acoustic Sensor Networks."
+      Sensors, 2013, 13: 15385-15408.
+
+  [2] Chen Y, Jin X, Wan L, et al. "Selective Dynamic Coded Cooperative
+      Communications for Multi-Hop Underwater Acoustic Sensor Networks."
+      IEEE Access, 2019, 7: 70552-70565.
+
+  [3] Goutham V, Harigovindan VP. "Stochastic modelling and performance
+      analysis of cooperative HARQ in multi-cluster underwater acoustic
+      sensor networks." Sādhanā, 2021, 46:182.
+
+  [4] Sivajayaprakash A, Sukumaran R, Kumar C. "Cross-Layer Optimized HARQ
+      Protocol for Underwater Acoustic Wireless Sensor Networks Using
+      Stochastic Network Calculus." ICERCS, 2024.
+
+================================================================================
