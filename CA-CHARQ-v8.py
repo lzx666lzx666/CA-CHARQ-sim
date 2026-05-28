@@ -34,7 +34,8 @@ RV_SLICES = {0: (0, 100), 1: (100, 130), 2: (100, 160), 3: (100, 190)}
 CHARQ_FEC = [(100, 150), (150, 190)]
 CHARQ_FEC_SIZE = [50, 40]
 
-CA_HELPER_SKIP_RATIO = 0.75   # 0-2dB helpers 参与
+CA_HELPER_SKIP_RATIO = 0.50   # CA-CHARQ: helpers compete only below 0dB
+CARQ_SKIP_RATIO      = 0.30   # CARQ/CHARQ: helpers skip除非极端低SNR
 
 PROTO_SW_ARQ = "S&W ARQ"
 PROTO_CARQ   = "CARQ"
@@ -233,19 +234,7 @@ class UnderwaterNode:
                         hop_ok = True
                         break
                     elif msg['type'] == 'NACK':
-                        # v8: CA-CHARQ 专属——源端等待 Grace Period，若 helper 成功则跳过重传
-                        skip_h = msg.get('skip_helper', False)
-                        if self.protocol == PROTO_CA and not skip_h:
-                            grace = self.env.timeout(8.0)
-                            ack_grace = simpy.Event(self.env)
-                            gkey = f"{pid}_grace"
-                            self.ack_events[gkey] = ack_grace
-                            gr = yield ack_grace | grace
-                            self.ack_events.pop(gkey, None)
-                            if ack_grace in gr:
-                                hop_ok = True
-                                break
-                        # 所有协议：重传 RV0
+                        # v8: 所有协议收到 NACK 后直接重传 RV0
                         yield self.env.process(self.send_data(
                             self.next_hop_id, pid, 0, creation_time))
                 else:
@@ -337,20 +326,16 @@ class UnderwaterNode:
                 ratio = acc_mi / TARGET_MI
 
                 if self.protocol == PROTO_CARQ:
-                    # v8: CARQ 使用广播 NACK 竞争机制（与 CA-CHARQ 一致，消除串行协调）
-                    # Helper 竞争胜出后发送完整数据包 (RV0)，目的端 Chase 合并
                     if pkt.fec_idx <= 0:
                         c, _ = confidence_quantize(acc_mi)
-                        skip_h = (ratio > CA_HELPER_SKIP_RATIO)
+                        skip_h = (ratio > CARQ_SKIP_RATIO)
                         yield self.env.process(self.send_nack(
                             self.hop_source.get(pid, pkt.hop_tx), pid, 0, c, skip_helper=skip_h))
 
                 elif self.protocol == PROTO_CHARQ:
-                    # v8: C-HARQ 使用广播 NACK 竞争机制
-                    # Helper 竞争胜出后发送固定 FEC 分片 (Pac-1, 50 chunks)，目的端 IR 合并
                     if pkt.fec_idx <= 0:
                         c, _ = confidence_quantize(acc_mi)
-                        skip_h = (ratio > CA_HELPER_SKIP_RATIO)
+                        skip_h = (ratio > CARQ_SKIP_RATIO)
                         yield self.env.process(self.send_nack(
                             self.hop_source.get(pid, pkt.hop_tx), pid, 0, c, skip_helper=skip_h))
 
