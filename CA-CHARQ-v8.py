@@ -16,7 +16,7 @@ BITS_PER_CHUNK = 80
 CHUNKS_SYS     = 100
 CHUNKS_PARITY_MAX = 90
 TX_POWER_W     = 15.0
-TARGET_MI      = 11000.0   # v8: 保持 v6 默认值
+TARGET_MI      = 11000.0   # 与 v6 一致
 MAX_HOP_RETRYS     = 8
 MAX_MERGE_ATTEMPTS = 16
 T_MAX_WINDOW    = 1.5
@@ -34,7 +34,7 @@ RV_SLICES = {0: (0, 100), 1: (100, 130), 2: (100, 160), 3: (100, 190)}
 CHARQ_FEC = [(100, 150), (150, 190)]
 CHARQ_FEC_SIZE = [50, 40]
 
-CA_HELPER_SKIP_RATIO = 0.50
+CA_HELPER_SKIP_RATIO = 0.75   # 0-2dB helpers 参与
 
 PROTO_SW_ARQ = "S&W ARQ"
 PROTO_CARQ   = "CARQ"
@@ -233,14 +233,21 @@ class UnderwaterNode:
                         hop_ok = True
                         break
                     elif msg['type'] == 'NACK':
-                        # v8: CA-CHARQ 源端使用 NACK 请求的 RV，不再固定 RV0
-                        if self.protocol == PROTO_CA:
-                            req_rv = msg.get('req_rv', 0)
-                            yield self.env.process(self.send_data(
-                                self.next_hop_id, pid, req_rv, creation_time))
-                        else:
-                            yield self.env.process(self.send_data(
-                                self.next_hop_id, pid, 0, creation_time))
+                        # v8: CA-CHARQ 专属——源端等待 Grace Period，若 helper 成功则跳过重传
+                        skip_h = msg.get('skip_helper', False)
+                        if self.protocol == PROTO_CA and not skip_h:
+                            grace = self.env.timeout(8.0)
+                            ack_grace = simpy.Event(self.env)
+                            gkey = f"{pid}_grace"
+                            self.ack_events[gkey] = ack_grace
+                            gr = yield ack_grace | grace
+                            self.ack_events.pop(gkey, None)
+                            if ack_grace in gr:
+                                hop_ok = True
+                                break
+                        # 所有协议：重传 RV0
+                        yield self.env.process(self.send_data(
+                            self.next_hop_id, pid, 0, creation_time))
                 else:
                     yield self.env.process(self.send_data(
                         self.next_hop_id, pid, 0, creation_time))
@@ -366,7 +373,8 @@ class UnderwaterNode:
                     mi = np.sum(np.log2(1.0 + pkt.received_snr_array)) * BITS_PER_CHUNK
                     if mi >= TARGET_MI:
                         c, _ = confidence_quantize(mi)
-                        self.soft_buffer[pid] = {"status": "DONE", "c_pkt": c}
+                        self.soft_buffer[pid] = {"status": "DONE", "c_pkt": c,
+                                                  "creation_time": pkt.creation_time}
 
         # ---- CReq 处理 ----
         elif pkt.pkt_type == PKT_CREQ:
@@ -409,17 +417,19 @@ class UnderwaterNode:
                         else:
                             buf = self.soft_buffer.get(pid)
                             if isinstance(buf, dict) and buf.get("status") == "DONE":
-                                self.env.process(self.contend(pkt, buf["c_pkt"]))
+                                ct = buf.get("creation_time", pkt.creation_time)
+                                self.env.process(self.contend(pkt, buf["c_pkt"], ct))
                 # 保留 NACK-CN 处理（兼容 C-HARQ 特定 helper 请求）
                 elif self.protocol in (PROTO_CARQ, PROTO_CHARQ) and pkt.fec_idx >= 0:
                     buf = self.soft_buffer.get(pid)
                     if isinstance(buf, dict) and buf.get("status") == "DONE":
+                        ct = buf.get("creation_time", pkt.creation_time)
                         if pkt.fec_idx > 0:
                             yield self.env.process(self.send_fec(
-                                pkt.hop_tx, pid, pkt.fec_idx, pkt.creation_time))
+                                pkt.hop_tx, pid, pkt.fec_idx, ct))
                         else:
                             yield self.env.process(self.send_data(
-                                pkt.hop_tx, pid, 0, pkt.creation_time))
+                                pkt.hop_tx, pid, 0, ct))
 
         # ---- ACK 处理 ----
         elif pkt.pkt_type == PKT_ACK:
@@ -433,7 +443,7 @@ class UnderwaterNode:
                     self.pending_response[pid] = {'type': 'ACK'}
 
     # ---------- Helper 竞争 (CA-CHARQ / CARQ / C-HARQ) ----------
-    def contend(self, pkt, my_c):
+    def contend(self, pkt, my_c, creation_time):
         pid = pkt.pid
         if pid in self.helper_cancel_events: return
         score = (W1 * min(my_c, 1.5)
@@ -446,18 +456,15 @@ class UnderwaterNode:
         if cancel not in result:
             self.helper_tx_cnt[pid] += 1
             if self.protocol == PROTO_CARQ:
-                # CARQ helper: 发送完整数据包 (RV0)，目的端 Chase 合并
                 yield self.env.process(self.send_data(
-                    pkt.hop_tx, pid, 0, pkt.creation_time))
+                    pkt.hop_tx, pid, 0, creation_time))
             elif self.protocol == PROTO_CHARQ:
-                # C-HARQ helper: 发送固定 FEC 分片 Pac-1 (50 chunks)，目的端 IR 合并
                 yield self.env.process(self.send_fec(
-                    pkt.hop_tx, pid, 1, pkt.creation_time))
+                    pkt.hop_tx, pid, 1, creation_time))
             else:
-                # CA-CHARQ: 发送 NACK 中请求的自适应 RV
                 rv = pkt.nack_requested_rv
                 yield self.env.process(self.send_data(
-                    pkt.hop_tx, pid, rv, pkt.creation_time))
+                    pkt.hop_tx, pid, rv, creation_time))
         self.helper_cancel_events.pop(pid, None)
 
     # ---------- 发送方法 ----------
