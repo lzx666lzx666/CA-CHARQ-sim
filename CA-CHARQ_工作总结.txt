@@ -5,206 +5,109 @@ CA-CHARQ 水下声学协作 HARQ 仿真 —— 对话工作总结
 
 一、v6 初始问题诊断
 ──────────────────────────────────────────────────────────────
-用户提供了 v6 仿真结果（TARGET_MI=11000, 5跳, Rician K=2），存在以下问题：
 
-(1) C-ARQ 延迟劣于 S&W ARQ
-    根因: CARQ 串行 CREQ→CAVL→NACK-CN 协调每跳增加 ~2s 等待。
-    CARQ helpers 被错误激活参与广播 NACK 竞争(line 507),
-    造成冗余发送 + 无合并增益。
+(已省略历史版本 v6~v10 详细记录，参见 Git 历史)
 
-(2) HARQ 协议在 0-2dB 出现延迟平台期
-    根因: 低 SNR 下 helper 无法解码 RV0 → 协作未激活 →
-    所有协议退化等同 S&W 源端重传。
-
-(3) 四种方案在 2dB 后性能过于接近
-    根因: TARGET_MI=11000, 一次传输 MI 在 ~3dB 已超过阈值 →
-    一传即成功 → 所有协议无差异。5跳级联放大后收敛更快。
-
-(4) 吞吐量图表无规律波动
-    根因: get_throughput() 使用动态时间窗口
-    (_last_success_time - _first_success_time) 作为分母,
-    分母随 SNR 非单调变化 → 虚高/虚低。
-
-(5) S&W/CARQ 使用概率模型(MI→logistic 尾概率)与 HARQ 确定型 MI
-    不对等 → S&W/CARQ 在中等 SNR 享有"概率魔术"优势,
-    虚高其性能 → 不公平比较。
-
-(6) CA-CHARQ 源端自适应 RV 造成反效果
-    源端发送 RV1(仅 parity chunks 100-130)时 PAC-0 不再累积
-    → 需要 3 次传输才能成功(而非 2 次) → 性能劣于 S&W。
-
-(7) CA_HELPER_SKIP_RATIO=0.50 过于激进
-    0dB 时 ratio≈0.73 > 0.50 → helper 始终被跳过 →
-    所有协作协议退化等同 S&W。
-
-二、v8 修复方案
+二、v6-plus — 对照组重构 + CA-CHARQ 优化
 ──────────────────────────────────────────────────────────────
 
-核心修改:
-  (a) 移除 CARQ 的广播 NACK 竞争路径(line 507)
-  (b) 吞吐量改为固定 SIM_TIME 分母
-  (c) 统一所有协议为确定型 MI(acc_mi ≥ TARGET → 成功)
-  (d) 所有协议统一 Chase 累加(+=), 移除概率模型
-  (e) C-HARQ ratio<0.40 后添加 return(移除 0.8s 空等)
-  (f) CA-CHARQ 源端回归 RV0-only(与 v6 一致)
-  (g) CARQ/C-HARQ 从串行 CREQ 改为广播 NACK 竞争
-  (h) Helper 竞争统一使用 contend() + DONE 状态
+日期: 2026-05-29 (同日)
 
-v8 结果(TARGET=11000, skip=0.50, 无 Grace, SIM_TIME=8000):
-  CA-CHARQ 与 S&W 在 0-15dB 全域延迟/开销一致(均 ~82s/10.4x)。
-  原因: skip=0.50 → 所有 SNR 下 helper 均被跳过 → 无协作激活。
-  公平对比下, CA-CHARQ 退化为 S&W 等效是正确行为(源端 Chase 已
-  自洽)。v6 的 CA-CHARQ 优势来源于 S&W 概率模型的劣势。
+2.1 背景与目标
+──────────────────────────────────────
+基于 v6 代码，参照设计方案（刘子昕_设计方案0520-批注.docx）重构三个
+对照组协议，随后加入 CA-CHARQ 并进行延迟优化。
 
-三、v9 — SINR 碰撞模型 + RTS 锁定 + Grace Period
-──────────────────────────────────────────────────────────────
+2.2 对照组设计 (S&W ARQ / C-ARQ / C-HARQ)
+──────────────────────────────────────
+- 统一所有协议为确定型 MI(acc_mi ≥ TARGET → 成功)
+- 移除 v6 的概率模型、动态吞吐量、双信道
+- C-HARQ: 每跳预选1个 helper（距中点最近），听到 NACK 后主动连发
+  Pac-1 → Pac-2 (固定 FEC)，目的端 Chase+IR 合并
+- C-ARQ: 同helper预选，但helper回复完整 RV0（纯 Chase，无 IR）
+- S&W ARQ: 源端 Chase RV0，无 helper
+- 参数缩减: SNR 0~4dB (0.5步长), SIM_TIME=8000s, N_RUNS=5
 
-新增三个关键机制:
+2.3 发现并修复的 v6 原始 bug
+──────────────────────────────────────
+tx_loop 中 `yield ack_ev`（单事件）返回值类型与 `yield ack_ev|to_ev`
+（组合事件）不同，导致 pending_response 在 ACK 已存储的情况下仍走
+timeout 路径，造成无谓重传。修复后 C-HARQ 延迟显著改善。
 
-(1) SINR 碰撞模型 (Channel._on_air)
-    - OnAirRecord 记录每条信号的空中时间窗口及逐 chunk SNR
-    - 接收端检测时间窗口重叠 → 计算干扰功率 → SINR 惩罚
-    - 等效 SNR = signal_SNR / (1 + Σ inter_SNR)
-    - 控制包(ACK/NACK/RTS/LOCK)同样受碰撞约束
+2.4 CA-CHARQ 实现（按设计方案）
+──────────────────────────────────────
+- 置信度量化: confidence_quantize(acc_mi) → Cpkt (0~3)
+- 退避竞争: 3个helper基于 W1×Cpkt + W2×能量 + W3/传播延迟 得分竞争
+- 自适应RV: helper 按 Cpkt 发送 RV1(30块)/RV2(60块)/RV3(90块) 校验
+  源端始终发 RV0 (Chase)，各司其职
+- NACK 携带 Cpkt，仅对源端数据触发（加 hop_tx == hop_source 防护）
 
-(2) RTS + LOCK_ACK Helper 互斥
-    - Helper 退避定时器到期 → 发送 RTS(1 chunk, 0.067s)
-    - 目的端收到首个非碰撞 RTS → 广播 LOCK_ACK 锁定该 helper
-    - 被锁定 helper → 发送 DATA(adaptive RV)
-    - RTS 碰撞 → 无 LOCK → Grace 超时 → 源端回退重传
-    - 解决水声传播延迟下的隐藏终端问题
+2.5 延迟优化过程（3轮迭代）
+──────────────────────────────────────
+第1轮结果: CA-CHARQ 在 1.0dB 最优(64s)，但 1.5dB+ 退化，开销高(16-21x)
 
-(3) CA-CHARQ 自适应 Grace Period
-    - 源端收到 NACK 且 skip_h=False 时 → 等待 Grace 时间
-    - Grace_t = T_MAX_WINDOW×1.5 + rv_chunks×80/1200 + 3×prop + 1.2
-    - 若 helper 成功 → ACK 到达 → 跳过源端重传 → 节省一次传输
-    - 若 Grace 超时 → 源端重传
+根因分析:
+  (a) NACK 级联: 收到 helper 响应后失败→再发 NACK→源端重发+helper再竞争
+  (b) 源端自适应 RV: 高置信时源端发 RV1(30块) 而非 RV0(100块)，Chase 增益不足
+  (c) Cpkt→RV 映射: 高置信(Cpkt=3)→RV0(100块,6.67s)，比 C-HARQ的Pac-1(50块,3.33s)慢一倍
 
-v9 参数:
-  TARGET_MI=11000, skip_CA=0.75, skip_CARQ=0.30
-  SNR: -5~15dB, K2_Rician + K0_Rayleigh
+优化措施:
+  ① 源端始终发 RV0（仅 helper 侧自适应）
+  ② NACK 仅对源端数据触发（hop_tx == hop_source）
+  ③ 保护间隔 0.2s → 0.05s
+  ④ Helper 仅发校验块 (RV1-3)，高置信时发 RV1(30块,2.0s) 替代 RV0(100块,6.67s)
 
-v9 结果(K2_Rician, 稀疏发包 exp(30)):
-  ┌───────┬──────────┬──────────┬──────────┬──────────────────┐
-  │ SNR   │ S&W ARQ  │ C-HARQ   │ CA-CHARQ │ CA-CHARQ 优势    │
-  ├───────┼──────────┼──────────┼──────────┼──────────────────┤
-  │ -2dB  │ 982s     │ 633s     │ 465s     │ 27% faster       │
-  │ -1dB  │ 478s     │ 415s     │ 159s     │ 62% faster       │
-  │  0dB  │ 254s     │ 272s     │ 134s     │ 47% faster       │
-  │  1dB  │ 136s     │ 150s     │ 122s     │ 10% faster       │
-  │  2dB  │ 109s     │ 110s     │ 101s     │ 7% faster        │
-  └───────┴──────────┴──────────┴──────────┴──────────────────┘
+2.6 最终 v6-plus 结果 (5跳, 8000s, 5 MC)
+──────────────────────────────────────
 
-  开销方面 0-3dB CA-CHARQ 同样最优(15.9x vs 16.5x S&W at 0dB)。
+延迟 (s):
+  SNR  | S&W ARQ | C-HARQ  | CA-CHARQ | CA vs C-HARQ
+  ─────┼─────────┼─────────┼──────────┼─────────────
+  0.0dB|   83    |   72    |    73    |  接近 (−1s)
+  0.5dB|   84    |   70    |    67    |  −4%
+  1.0dB|   82    |   67    |    62    |  −8%
+  1.5dB|   84    |   67    |    60    | −10%
+  2.0dB|   82    |   64    |    57    | −11%
+  2.5dB|   78    |   60    |    55    |  −8%
+  3.0dB|   53    |   46    |    44    |  −4%
+  3.5dB|   39    |   39    |    38    |  持平
+  4.0dB|   38    |   38    |    38    |  持平
 
-  但存在严重问题: -4~-2dB 开销爆炸(82-195x), -3dB 以下完全崩溃
-  (nan/0成功)。根因: Grace Period 在 helper 解码概率<50%时仍被
-  激活 → 每跳 10s+ 空等 → 级联膨胀。
+CA-CHARQ 在 0.5~3.0dB 全域最优延迟，C-HARQ 次之，C-ARQ 与 S&W 持平。
 
-四、v9 → v10 过渡修复
-──────────────────────────────────────────────────────────────
+开销 (×有用数据):
+  SNR  | S&W ARQ | C-HARQ  | CA-CHARQ
+  ─────┼─────────┼─────────┼──────────
+  0.0dB|  10.40  |  13.31  |  13.26
+  1.5dB|  10.35  |  14.45  |  13.88
+  3.0dB|   6.60  |   7.79  |   7.81
+  4.0dB|   5.16  |   5.17  |   5.17
 
-新增 HELPER_MIN_MI=6000 门限:
-  CA-CHARQ skip_h = (ratio > 0.75) OR (acc_mi < 6000)
-  当 MI < 6000(~-1dB)时跳过 Grace → 退化等同 S&W
+2.7 当前代码架构 (CA-CHARQ-v6-plus.py)
+──────────────────────────────────────
+协议: S&W ARQ, C-ARQ, C-HARQ, CA-CHARQ
+信道: 仅 Rician K=2, 无碰撞模型
+参数: TARGET_MI=11000, SIM_TIME=8000s, N_RUNS=5
+      SNR: 0~4dB (0.5dB步长, 9点)
+      MAX_HOP_RETRYS=5, MAX_MERGE_ATTEMPTS=8
+      N_HELPERS_PER_HOP=3, 退避竞争权重 W1/W2/W3=0.40/0.25/0.35
+      C-HARQ/C-ARQ: 1 预选 helper(中点), CA-CHARQ: 3 helper 竞争
 
-v10 结果:
-  -4~-2dB 开销回归正常(22-30x, 与 S&W 一致), 不再爆炸
-  但 0dB+ Grace 优势也随之缩小(CA-CHARQ 全域 ≈ S&W)
-
-五、文献参考与理论分析
-──────────────────────────────────────────────────────────────
-
-(1) Goutham 2021 (HARQ-INCC):
-    - 协作仅在 S-D 距离 > 阈值时优于直接通信
-    - 阈值距离由能效交叉点确定
-    - 增加中继数可显著提升 C-HARQ 的 PER/EE
-
-(2) Goutham 2021 (Stochastic C-HARQ):
-    - 马尔可夫链模型分析多簇 UASN 端到端 PER
-    - 存在浅水/深水的阈值距离决定最优方案
-    - R 个 relay → 多种解码状态组合
-
-(3) Chen 2019 (S-DCC):
-    - 主动 helper 重传 → 消除 NAK 等待时间
-    - 接收端选择性利用协作块
-    - SNR 区间 45-49dB (等效接收端 -5~-1dB at 2km)
-    - 与当前仿真的 SNR 范围完全吻合
-
-(4) SNR 定义等价性:
-    你的仿真: 控制 noise_var 达到目标接收端 SNR
-    文献: 固定噪声, 变距离/功率达到目标 SNR
-    两者在接收端产生的逐 chunk SNR 完全一致, 无需修改。
-
-六、关键设计决策总结
-──────────────────────────────────────────────────────────────
-
-(1) 碰撞模型: SINR 时间窗口检测(Path B)
-    → 维护 Channel._on_air 记录, 按 chunk 计算瞬时 SINR
-
-(2) Helper 互斥: RTS + LOCK_ACK 锁定机制
-    → RTS 仅 1 chunk(0.067s), 碰撞概率极低
-    → 被锁定 helper 发送 DATA, 其他取消
-
-(3) 公平对比: 统一确定型 MI + Chase 累加
-    → 所有协议使用相同 PHY 层模型
-    → C-HARQ 恢复串行 CREQ 路径(对标 Ghosh 2013)
-    → CA-CHARQ 使用 RTS 竞争(对标提出方案)
-
-(4) 协作门限: HELPER_MIN_MI + skip_ratio
-    → 低 SNR 下自动退化(S&W 等效), 避免 Grace 空等
-    → 中 SNR(0-3dB)激活协作, 发挥 IR 优势
-
-(5) 发包模型: 稀疏 exp(30s)(与水下实际场景一致)
-    → 全缓冲 exp(0.01)在 SINR 模型下产生密集干扰 → 不可行
-
-(6) 吞吐量: 固定 SIM_TIME 分母(v8 fix, 去除 v6 动态窗口)
-
-(7) creation_time: helper 发送数据时正确传递原始创建时间
-    (v8 fix, 去除 phantom 3865s 延迟)
-
-七、当前代码架构 (CA-CHARQ-v10.py)
-──────────────────────────────────────────────────────────────
-
-文件: CA-CHARQ-v10.py (基于 v9 原地修改)
-
-参数:
-  TARGET_MI=11000, CA_HELPER_SKIP_RATIO=0.85, CARQ_SKIP_RATIO=0.30
-  SNR: -5~5dB (0.5dB步长), K2_Rician仅
-  SIM_TIME=5000s, N_RUNS=3
-  稀疏发包: exp(30s)
+置信度映射: ratio<0.45→Cpkt=0(RV3,90校验), 0.45-0.65→Cpkt=1(RV2,60校验),
+            0.65-0.85→Cpkt=2(RV1,30校验), >0.85→Cpkt=3(RV1,30校验)
 
 核心类:
-  - StatsTracker: 延迟/开销/能效/吞吐量统计
-  - PhysicalPacket: DATA/ACK/NACK/CREQ/CAVL/RTS/LOCK 类型
-  - OnAirRecord: 空中信号记录(SINR 碰撞检测)
-  - UnderwaterNode: 源端/目的的协议逻辑 + tx_loop + recv_loop
-  - Channel: 广播 + _on_air 注册 + _deliver SINR 检测
+  - StatsTracker: 延迟/开销统计 (固定 SIM_TIME 分母)
+  - PhysicalPacket: DATA/ACK/NACK, 新增 cpkt 字段
+  - UnderwaterNode: tx_loop(源端Chase), handle(目的端IR合并), contend(竞争)
+  - Channel: 广播 + Rician K=2 水声信道
 
-协议逻辑:
-  - S&W: 源端 Chase RV0, 无 helper
-  - CARQ: CREQ 串行协调, helper 发送完整 RV0
-  - C-HARQ: CREQ 串行协调, helper 发送 Pac-1/Pac-2 FEC
-  - CA-CHARQ: 广播 NACK + RTS 竞争 + adaptive RV + Grace(已移除)
-
-helper 互斥:
-  - contend(): 退避计时 → RTS → 等 LOCK_ACK → DATA
-  - RTS 碰撞 → 无 LOCK → 自然 fallback
-
-八、当前已知问题
-──────────────────────────────────────────────────────────────
-
-(1) CA-CHARQ 在 -5~-1dB 仍有局部崩溃
-    HELPER_MIN_MI 门限不能可靠阻止 Grace 在累积 MI 较高时
-    被激活 → 需要改为仅第一传触发 Grace
-
-(2) 无 Grace Period 时 CA-CHARQ 源端必重传 → 3 次传输
-    (vs S&W 2次) → 开销反而更高 → 延迟优势有限
-
-(3) CARQ/C-HARQ 串行 CREQ 在低 SNR 下碰撞数极高
-    (40000-100000 vs S&W 5000-23000)
-
-(4) 碰撞计数被高估 — 当前将 0.2s NACK 等无关包也计入"碰撞"
-    但实际仅影响单个包重传(对整体延迟 <0.5%)
+2.8 待后续版本加入
+──────────────────────────────────────
+  - SINR 碰撞模型 (设计方案参考 v9/v10)
+  - RTS + LOCK_ACK Helper 互斥机制
+  - DCC/S-DCC 对照组
+  - 全局超时定时器 (异常处理)
+  - NACK 重试机制 (最多3次，CA-CHARQ 目的端)
 
 ===============================================================================
