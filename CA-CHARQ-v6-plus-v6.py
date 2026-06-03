@@ -58,7 +58,7 @@ def miesm_confidence(soft_buffer):
     gap_db = 2.5 - code_rate
     snr_50_db = snr_shannon_db + gap_db
     delta_db = snr_eff_db - snr_50_db
-    if delta_db > 0.3:       cpkt = 3
+    if delta_db > -0.2:      cpkt = 3
     elif delta_db > -2.0:    cpkt = 2
     elif delta_db > -3.5:    cpkt = 1
     else:                    cpkt = 0
