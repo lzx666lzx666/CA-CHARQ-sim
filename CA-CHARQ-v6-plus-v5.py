@@ -236,7 +236,7 @@ class UnderwaterNode:
                         break
                     elif self.protocol == PROTO_CA:
                         cpkt = msg.get('cpkt', 2)
-                        if cpkt >= 1:
+                        if cpkt >= 3:
                             rv_chunks = {0: 90, 1: 60, 2: 30}.get(cpkt, 30)
                             rv_tx_t = rv_chunks * BITS_PER_CHUNK / BIT_RATE
                             grace_t = rv_tx_t + T_MAX_WINDOW / 2 + 3 * HOP_DIST / SOUND_SPEED + 0.5
@@ -275,7 +275,7 @@ class UnderwaterNode:
                             if cpkt >= 3:
                                 rv_chunks = {0: 90, 1: 60, 2: 30}.get(cpkt, 30)
                                 rv_tx_t = rv_chunks * BITS_PER_CHUNK / BIT_RATE
-                                grace_t = rv_tx_t + T_MAX_WINDOW / 4 + 3 * HOP_DIST / SOUND_SPEED + 0.3
+                                grace_t = rv_tx_t + 3 * HOP_DIST / SOUND_SPEED + 0.3
                                 grace_to = self.env.timeout(grace_t)
                                 ack_he = simpy.Event(self.env)
                                 self.helper_ack_events[pid] = ack_he
