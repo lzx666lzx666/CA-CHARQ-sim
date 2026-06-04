@@ -417,14 +417,7 @@ class UnderwaterNode:
                 if (pkt.hop_rx, pkt.hop_tx) == (link_src, link_dst):
                     buf = self.soft_buffer.get(pid)
                     if isinstance(buf, dict) and buf.get("status") == "DECODED":
-                        if pkt.cpkt >= 3:
-                            self.env.process(self.contend(pkt))
-                        elif self.is_low_snr_selected:
-                            cpkt = pkt.cpkt
-                            rv = 1 if cpkt >= 2 else (2 if cpkt >= 1 else 3)
-                            self.helper_tx_cnt[pid] += 1
-                            yield self.env.process(self.send_data(
-                                pkt.hop_tx, pid, rv, buf["creation_time"]))
+                        self.env.process(self.contend(pkt))
 
             elif self.role == 'HELPER' and self.is_selected:
                 link_src, link_dst = self.helper_for_link
@@ -486,6 +479,8 @@ class UnderwaterNode:
         t += max(T_PROTECTION_GAP / 4, 0.05)
         if score > 0.90:
             t = 0.0
+        elif pkt.cpkt < 3 and self.is_low_snr_selected:
+            t = 0.02
 
         cancel_ev = simpy.Event(self.env)
         self.helper_cancel_events[pid] = cancel_ev
