@@ -89,6 +89,7 @@ class StatsTracker:
         self.total_data_tx = 0
         self.total_nack_tx = 0
         self.total_ack_tx = 0
+        self.total_energy = 0.0
         self.e2e_delays = []
         self.e2e_success_count = 0
         self.e2e_drop_count = 0
@@ -98,6 +99,7 @@ class StatsTracker:
     def record_data_tx(self):       self.total_data_tx += 1
     def record_nack_tx(self):       self.total_nack_tx += 1
     def record_ack_tx(self):        self.total_ack_tx += 1
+    def record_energy(self, joules): self.total_energy += joules
 
     def e2e_success(self, pid, delay):
         if pid not in self._pkt_fate:
@@ -126,6 +128,10 @@ class StatsTracker:
     def get_drop_rate(self):
         total = self.e2e_success_count + self.e2e_drop_count
         return self.e2e_drop_count / total if total > 0 else 0.0
+
+    def get_ee(self):
+        bits = self.e2e_success_count * CHUNKS_SYS * BITS_PER_CHUNK
+        return bits / self.total_energy if self.total_energy > 0 else float('nan')
 
 
 # ==========================================
@@ -504,6 +510,7 @@ class UnderwaterNode:
         elif pkt.pkt_type == PKT_NACK: self.stats.record_nack_tx()
         elif pkt.pkt_type == PKT_ACK: self.stats.record_ack_tx()
         self.energy -= TX_POWER_W * dur
+        self.stats.record_energy(TX_POWER_W * dur)
         yield self.env.timeout(dur)
         self.network.broadcast(self, pkt)
 
@@ -641,6 +648,7 @@ def run_sim(snr_db, protocol, sim_time, seed=0):
         "data_tx": stats.total_data_tx,
         "nack_tx": stats.total_nack_tx,
         "ack_tx": stats.total_ack_tx,
+        "ee": stats.get_ee(),
         "actual_snr": avg_snr_db(nv),
     }
 
@@ -649,7 +657,7 @@ def run_sim(snr_db, protocol, sim_time, seed=0):
 # 9. 蒙特卡洛
 # ==========================================
 def mc_run(snr_db, protocol, sim_time, n_runs):
-    delays, ovhds, tputs, drops = [], [], [], []
+    delays, ovhds, tputs, drops, ees = [], [], [], [], []
     succs, data_txs, nack_txs = [], [], []
 
     for run_i in range(n_runs):
@@ -659,6 +667,7 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
         delays.append(r['delay'] if not math.isnan(r['delay']) else None)
         ovhds.append(r['overhead'] if not math.isnan(r['overhead']) else None)
         tputs.append(r['throughput']); drops.append(r['drop_rate'])
+        ees.append(r['ee'] if not math.isnan(r['ee']) else None)
         succs.append(r['success']); data_txs.append(r['data_tx']); nack_txs.append(r['nack_tx'])
 
     def ci(arr):
@@ -669,12 +678,14 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 
     d_m, d_ci = ci(delays); o_m, o_ci = ci(ovhds)
     t_m, t_ci = ci(tputs); dr_m, dr_ci = ci(drops)
+    ee_m, ee_ci = ci(ees)
 
     return {
         "delay_mean": d_m, "delay_ci95": d_ci,
         "overhead_mean": o_m, "overhead_ci95": o_ci,
         "throughput_mean": t_m, "throughput_ci95": t_ci,
         "drop_rate_mean": dr_m, "drop_rate_ci95": dr_ci,
+        "ee_mean": ee_m, "ee_ci95": ee_ci,
         "avg_success": np.mean(succs), "avg_data_tx": np.mean(data_txs),
         "avg_nack_tx": np.mean(nack_txs),
         "actual_snr": avg_snr_db(noise_var_for_snr_db(snr_db)),
@@ -702,7 +713,8 @@ if __name__ == "__main__":
                PROTO_CHARQ: 'D', PROTO_CA: 'o'}
 
     results = {p: {'delay': ([], []), 'overhead': ([], []),
-                   'throughput': ([], []), 'drop_rate': ([], [])}
+                   'throughput': ([], []), 'drop_rate': ([], []),
+                   'ee': ([], [])}
                for p in PROTOCOLS}
 
     print("=" * 65)
@@ -724,6 +736,8 @@ if __name__ == "__main__":
             results[proto]['throughput'][1].append(r['throughput_ci95'])
             results[proto]['drop_rate'][0].append(r['drop_rate_mean'])
             results[proto]['drop_rate'][1].append(r['drop_rate_ci95'])
+            results[proto]['ee'][0].append(r['ee_mean'])
+            results[proto]['ee'][1].append(r['ee_ci95'])
             print(f"  SNR={snr:+4.1f}dB | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | "
                   f"Ovhd={r['overhead_mean']:6.3f}±{r['overhead_ci95']:.3f} | "
                   f"Drop={r['drop_rate_mean']:.3f}±{r['drop_rate_ci95']:.3f} | Succ={r['avg_success']:.0f}")
@@ -767,6 +781,26 @@ if __name__ == "__main__":
     print("\n[OK] v6-plus-v7_Delay_Overhead.png")
     plt.close('all')
 
+    # EE 子图
+    fig2, ax_ee = plt.subplots(1, 1, figsize=(7, 5))
+    for proto in PROTOCOLS:
+        y = np.array(results[proto]['ee'][0])
+        mask = ~np.isnan(y)
+        if mask.any():
+            xm = np.array(SNR_LIST)[mask]
+            ax_ee.plot(xm, y[mask], MARKERS[proto]+'-',
+                       color=COLORS[proto], lw=1.8, ms=7, label=proto,
+                       markerfacecolor='white', markeredgecolor=COLORS[proto],
+                       markeredgewidth=0.8)
+    ax_ee.set_xlabel("Average Per-Hop SNR (dB)")
+    ax_ee.set_ylabel("Energy Efficiency (bits/Joule)")
+    ax_ee.grid(True, ls='-', alpha=0.15, color='gray')
+    ax_ee.legend(frameon=True, fancybox=False, edgecolor='gray', loc='lower right')
+    plt.tight_layout()
+    plt.savefig("v6-plus-v7_EE.png", dpi=200, bbox_inches='tight')
+    print("[OK] v6-plus-v7_EE.png")
+    plt.close('all')
+
     # ---- 文本汇总 ----
     print(f"\n{'='*65}")
     print("Overhead (Tx/Useful) mean ± 95% CI")
@@ -788,6 +822,16 @@ if __name__ == "__main__":
             v = results[proto]['delay'][0][i]
             e = results[proto]['delay'][1][i]
             parts.append(f"{v:.0f}±{e:.0f}" if not np.isnan(v) else "        n/a")
+        print(f"{s:+4.1f}dB | " + " | ".join(f"{p:>15s}" for p in parts))
+
+    print(f"\nEnergy Efficiency (bits/Joule) mean ± 95% CI")
+    print(header)
+    for i, s in enumerate(SNR_LIST):
+        parts = []
+        for proto in PROTOCOLS:
+            v = results[proto]['ee'][0][i]
+            e = results[proto]['ee'][1][i]
+            parts.append(f"{v:.1f}±{e:.1f}" if not np.isnan(v) else "        n/a")
         print(f"{s:+4.1f}dB | " + " | ".join(f"{p:>15s}" for p in parts))
     print("=" * 65)
     print("Done.")
