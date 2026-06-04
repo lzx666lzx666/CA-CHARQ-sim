@@ -245,7 +245,7 @@ class UnderwaterNode:
                         if cpkt >= 3:
                             rv_chunks = {0: 90, 1: 60, 2: 30}.get(cpkt, 30)
                             rv_tx_t = rv_chunks * BITS_PER_CHUNK / BIT_RATE
-                            grace_t = rv_tx_t + T_MAX_WINDOW / 2 + 3 * HOP_DIST / SOUND_SPEED + 0.5
+                            grace_t = rv_tx_t + T_MAX_WINDOW / 4 + 3 * HOP_DIST / SOUND_SPEED + 0.3
                             grace_to = self.env.timeout(grace_t)
                             ack_he = simpy.Event(self.env)
                             self.helper_ack_events[pid] = ack_he
@@ -281,7 +281,7 @@ class UnderwaterNode:
                             if cpkt >= 3:
                                 rv_chunks = {0: 90, 1: 60, 2: 30}.get(cpkt, 30)
                                 rv_tx_t = rv_chunks * BITS_PER_CHUNK / BIT_RATE
-                                grace_t = rv_tx_t + 3 * HOP_DIST / SOUND_SPEED + 0.3
+                                grace_t = rv_tx_t + T_MAX_WINDOW / 4 + 3 * HOP_DIST / SOUND_SPEED + 0.3
                                 grace_to = self.env.timeout(grace_t)
                                 ack_he = simpy.Event(self.env)
                                 self.helper_ack_events[pid] = ack_he
@@ -467,8 +467,9 @@ class UnderwaterNode:
 
         my_c = buf.get("c_pkt", 1.0)
         link_src, link_dst = self.helper_for_link
-        mid_x = (link_src + link_dst) / 2.0 * HOP_DIST
-        dist = math.hypot(self.x - mid_x, self.y - 0)
+        d_src = math.hypot(self.x - link_src * HOP_DIST, self.y - 0)
+        d_dst = math.hypot(self.x - link_dst * HOP_DIST, self.y - 0)
+        dist = max(d_src, d_dst)
         prop_u = dist / SOUND_SPEED
         score = (W1 * min(my_c, 1.5)
                  + W2 * max(0.0, min(1.0, self.energy / INITIAL_ENERGY))
