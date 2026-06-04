@@ -356,12 +356,13 @@ class UnderwaterNode:
                     return
                 else:
                     if (self.protocol == PROTO_CA
-                            and pkt.hop_tx == self.hop_source[pid]
-                            and self.nack_count[pid] < NACK_MAX):
+                            and pkt.hop_tx == self.hop_source[pid]):
                         c, cpkt = miesm_confidence(self.soft_buffer[pid])
-                        self.nack_count[pid] += 1
-                        yield self.env.process(self.send_nack_cpkt(
-                            self.hop_source[pid], pid, cpkt))
+                        max_n = NACK_MAX if cpkt >= 3 else 1
+                        if self.nack_count[pid] < max_n:
+                            self.nack_count[pid] += 1
+                            yield self.env.process(self.send_nack_cpkt(
+                                self.hop_source[pid], pid, cpkt))
                     elif pkt.hop_tx == self.hop_source[pid] and pid not in self.nack_sent:
                         self.nack_sent.add(pid)
                         yield self.env.process(self.send_nack(
@@ -676,7 +677,7 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 # ==========================================
 if __name__ == "__main__":
     SNR_LIST   = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
-    SIM_TIME   = 8000
+    SIM_TIME   = 15000
     N_RUNS     = 5
 
     PROTOCOLS = []
