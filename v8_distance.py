@@ -25,7 +25,7 @@ RICIAN_K = 2.0
 HOP_DIST = 600.0
 NUM_HOPS = 5
 N_HELPERS_PER_HOP = 3
-FREQ_KHZ       = 20.0
+FREQ_KHZ       = 10.0
 
 RV_SLICES = {0: (0, 100), 1: (100, 130), 2: (100, 160), 3: (100, 190)}
 
@@ -704,7 +704,7 @@ def mc_run(hop_dist, protocol, sim_time, n_runs, noise_var):
 # 10. 主程序
 # ==========================================
 if __name__ == "__main__":
-    HOP_DIST_LIST = [600, 800, 1000, 1200, 1500]
+    HOP_DIST_LIST = [400, 600, 800, 1000]
     SIM_TIME   = 8000
     N_RUNS     = 5
     NV_REF = noise_var_for_snr_db(0.0)
