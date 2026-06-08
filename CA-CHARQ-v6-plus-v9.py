@@ -783,8 +783,8 @@ if __name__ == "__main__":
     ax2.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
 
     plt.tight_layout()
-    plt.savefig("v9_Delay_Overhead.png", dpi=200, bbox_inches='tight')
-    print("\n[OK] v9_Delay_Overhead.png")
+    plt.savefig("output/v9_Delay_Overhead.png", dpi=200, bbox_inches='tight')
+    print("\n[OK] output/v9_Delay_Overhead.png")
     plt.close('all')
 
     # EE 子图
@@ -803,8 +803,8 @@ if __name__ == "__main__":
     ax_ee.grid(True, ls='-', alpha=0.15, color='gray')
     ax_ee.legend(frameon=True, fancybox=False, edgecolor='gray', loc='lower right')
     plt.tight_layout()
-    plt.savefig("v9_EE.png", dpi=200, bbox_inches='tight')
-    print("[OK] v9_EE.png")
+    plt.savefig("output/v9_EE.png", dpi=200, bbox_inches='tight')
+    print("[OK] output/v9_EE.png")
     plt.close('all')
 
     # ---- 文本汇总 ----
