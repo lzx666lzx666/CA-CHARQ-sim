@@ -705,8 +705,8 @@ def mc_run(hop_dist, protocol, sim_time, n_runs, noise_var):
 # ==========================================
 if __name__ == "__main__":
     HOP_DIST_LIST = [600, 650, 700, 750, 800, 850, 900, 950, 1000]
-    SIM_TIME   = 5000
-    N_RUNS     = 3
+    SIM_TIME   = 8000
+    N_RUNS     = 5
     NV_REF = noise_var_for_snr_db(0.0)
 
     PROTOCOLS = []
