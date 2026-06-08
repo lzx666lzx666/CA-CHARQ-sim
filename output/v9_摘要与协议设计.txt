@@ -79,7 +79,9 @@ CA-CHARQ在0-3.0dB接收信噪比区间实现端到端延迟全域领先5-11%；
    - rv_level>0（CA-CHARQ校验包）：累加到start_idx:end_idx（IR合并）
    - 其余（RV0系统数据）：累加到[0:100]（Chase/最大比合并）
    
-   每次累加后调用MIESM模型判断解码成败。
+    每次累加后，通过L2S抽象接口计算BLER（MIESM映射等效SINR →
+    结合码率的Sigmoid公式 → BLER估计值），再以Bernoulli随机试验
+    判定解码成败。该接口替代了实际LDPC/卷积译码+CRC校验的链路级仿真。
 
 1.6 对比协议
    S&W ARQ：  无协作节点，仅源端做Chase重传。开销最低但延迟最大。
@@ -91,9 +93,12 @@ CA-CHARQ在0-3.0dB接收信噪比区间实现端到端延迟全域领先5-11%；
 二、CA-CHARQ协议设计
 ──────────────────────────────────────────────────────────────
 
-2.1 PHY层解码判据（与对照组一致）
-   CA-CHARQ采用3GPP NR标准的MIESM（互信息有效信噪比映射）方法，
-   取代早期版本的Shannon容量绝对值门限（TARGET_MI=11000）。
+2.1 L2S抽象译码接口（与对照组一致）
+   协议不实现真实的LDPC/卷积码译码器，而是使用3GPP NR标准的链接级
+   仿真(L2S)接口：前半段通过MIESM互信息映射将190维soft_buffer压缩
+   为等效SINR，后半段通过Sigmoid解析式将等效SINR和当前码率映射为
+   BLER预测值。解码成败通过Bernoulli(1−BLER)随机试验判定。该两层
+   抽象替代了真实译码+CRC的链路仿真，是3GPP系统仿真中的标准做法。
 
    解码成功概率（BLER）的计算流程：
    (a) 对soft_buffer中所有活跃chunk，计算每chunk的MI = log2(1+SNR_i)
