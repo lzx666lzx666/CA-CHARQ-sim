@@ -585,11 +585,18 @@ class Channel:
 # ==========================================
 # 8. 仿真执行
 # ==========================================
-def run_sim(snr_db, protocol, sim_time, seed=0):
+def run_sim(snr_db, protocol, sim_time, seed=0, hop_dist=None, fixed_noise_var=None):
+    if hop_dist is not None:
+        global HOP_DIST
+        saved_dist = HOP_DIST
+        HOP_DIST = hop_dist
     random.seed(seed); np.random.seed(seed)
     env = simpy.Environment()
     stats = StatsTracker(sim_time)
-    nv = noise_var_for_snr_db(snr_db)
+    if fixed_noise_var is not None:
+        nv = fixed_noise_var
+    else:
+        nv = noise_var_for_snr_db(snr_db)
     ch = Channel(env, nv, k=RICIAN_K)
 
     routers = []
@@ -643,7 +650,7 @@ def run_sim(snr_db, protocol, sim_time, seed=0):
     env.process(gen())
     env.run(until=sim_time)
 
-    return {
+    result = {
         "delay": stats.get_avg_delay(),
         "delay_std": stats.get_delay_std(),
         "overhead": stats.get_overhead(),
@@ -655,20 +662,25 @@ def run_sim(snr_db, protocol, sim_time, seed=0):
         "nack_tx": stats.total_nack_tx,
         "ack_tx": stats.total_ack_tx,
         "ee": stats.get_ee(),
-        "actual_snr": avg_snr_db(nv),
+        "actual_snr": avg_snr_db(nv, hop_dist) if hop_dist else avg_snr_db(nv),
+        "hop_dist": hop_dist,
     }
+    if hop_dist is not None:
+        HOP_DIST = saved_dist
+    return result
 
 
 # ==========================================
 # 9. 蒙特卡洛
 # ==========================================
-def mc_run(snr_db, protocol, sim_time, n_runs):
+def mc_run(snr_db, protocol, sim_time, n_runs, hop_dist=None, fixed_noise_var=None):
     delays, ovhds, tputs, drops, ees = [], [], [], [], []
     succs, data_txs, nack_txs = [], [], []
 
     for run_i in range(n_runs):
         s = abs(42 + run_i * 7919 + int(snr_db * 3571) + (1 << 20)) % (2**31 - 1)
-        r = run_sim(snr_db, protocol, sim_time, seed=s)
+        r = run_sim(snr_db, protocol, sim_time, seed=s,
+                    hop_dist=hop_dist, fixed_noise_var=fixed_noise_var)
 
         delays.append(r['delay'] if not math.isnan(r['delay']) else None)
         ovhds.append(r['overhead'] if not math.isnan(r['overhead']) else None)
@@ -841,3 +853,61 @@ if __name__ == "__main__":
         print(f"{s:+4.1f}dB | " + " | ".join(f"{p:>15s}" for p in parts))
     print("=" * 65)
     print("Done.")
+    
+    # ==========================================
+    # 距离扫描 (不修改已有SNR图)
+    # ==========================================
+    D_LIST = [400, 600, 800, 1000]
+    NV_D = noise_var_for_snr_db(0.0)
+    SIM_T = 5000
+    N_RUNS_DIST = 3
+    
+    print(f"\n{'='*65}")
+    print(f" Distance sweep: {D_LIST}m, fixed noise (0dB@600m), SimTime={SIM_T}s")
+    print(f" Protocols: {', '.join(PROTOCOLS)}")
+    print("=" * 65)
+    
+    d_results = {p: {'delay': ([], []), 'overhead': ([], [])}
+                 for p in PROTOCOLS}
+    
+    for proto in PROTOCOLS:
+        print(f"\n  Protocol: {proto}")
+        for d in D_LIST:
+            r = mc_run(0.0, proto, SIM_T, N_RUNS_DIST, hop_dist=d, fixed_noise_var=NV_D)
+            d_results[proto]['delay'][0].append(r['delay_mean'])
+            d_results[proto]['delay'][1].append(r['delay_ci95'])
+            d_results[proto]['overhead'][0].append(r['overhead_mean'])
+            d_results[proto]['overhead'][1].append(r['overhead_ci95'])
+            print(f"    Dist={d:5d}m (SNR{r['actual_snr']:+.1f}dB) | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | "
+                  f"Ovhd={r['overhead_mean']:6.3f}±{r['overhead_ci95']:.3f} | Succ={r['avg_success']:.0f}")
+    
+    x_d = D_LIST
+    fig_d, (ax_d1, ax_d2) = plt.subplots(1, 2, figsize=(14, 5))
+    for proto in PROTOCOLS:
+        y = np.array(d_results[proto]['delay'][0]); mask = ~np.isnan(y)
+        if mask.any():
+            xm = np.array(x_d)[mask]
+            ax_d1.plot(xm, y[mask], MARKERS[proto]+'-',
+                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
+                     markerfacecolor='white', markeredgecolor=COLORS[proto],
+                     markeredgewidth=0.8)
+    ax_d1.set_xlabel("Hop Distance (m)"); ax_d1.set_ylabel("End-to-End Delay (s)")
+    ax_d1.grid(True, ls='-', alpha=0.15, color='gray')
+    ax_d1.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper left')
+    
+    for proto in PROTOCOLS:
+        y = np.array(d_results[proto]['overhead'][0]); mask = ~np.isnan(y)
+        if mask.any():
+            xm = np.array(x_d)[mask]
+            ax_d2.plot(xm, y[mask], MARKERS[proto]+'-',
+                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
+                     markerfacecolor='white', markeredgecolor=COLORS[proto],
+                     markeredgewidth=0.8)
+    ax_d2.set_xlabel("Hop Distance (m)"); ax_d2.set_ylabel("Transmission Overhead (x Usefulness)")
+    ax_d2.grid(True, ls='-', alpha=0.15, color='gray')
+    ax_d2.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper left')
+    
+    plt.tight_layout()
+    plt.savefig("output/v9_Distance_Delay_Overhead.png", dpi=200, bbox_inches='tight')
+    print("\n[OK] output/v9_Distance_Delay_Overhead.png")
+    plt.close('all')
