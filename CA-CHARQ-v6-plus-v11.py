@@ -874,7 +874,7 @@ if __name__ == "__main__":
     print(f" Protocols: {', '.join(PROTOCOLS)}")
     print("=" * 65)
     
-    d_results = {p: {'delay': ([], []), 'overhead': ([], [])}
+    d_results = {p: {'delay': ([], []), 'overhead': ([], []), 'success': []}
                  for p in PROTOCOLS}
     
     for proto in PROTOCOLS:
@@ -885,6 +885,7 @@ if __name__ == "__main__":
             d_results[proto]['delay'][1].append(r['delay_ci95'])
             d_results[proto]['overhead'][0].append(r['overhead_mean'])
             d_results[proto]['overhead'][1].append(r['overhead_ci95'])
+            d_results[proto]['success'].append(r['avg_success'])
             print(f"    Dist={d:5d}m (SNR{r['actual_snr']:+.1f}dB) | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | "
                   f"Ovhd={r['overhead_mean']:6.3f}±{r['overhead_ci95']:.3f} | Succ={r['avg_success']:.0f}")
     
@@ -917,4 +918,24 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig("output/v11_Distance_Delay_Overhead.png", dpi=200, bbox_inches='tight')
     print("\n[OK] output/v11_Distance_Delay_Overhead.png")
+    plt.close('all')
+
+    # 距离扫成功包数
+    fig_succ, ax_succ = plt.subplots(1, 1, figsize=(7, 5))
+    for proto in PROTOCOLS:
+        y = np.array(d_results[proto]['success'])
+        mask = ~np.isnan(y)
+        if mask.any():
+            xm = np.array(x_d)[mask]
+            ax_succ.plot(xm, y[mask], MARKERS[proto]+'-',
+                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
+                     markerfacecolor='white', markeredgecolor=COLORS[proto],
+                     markeredgewidth=0.8)
+    ax_succ.set_xlabel("Hop Distance (m)")
+    ax_succ.set_ylabel("Successful Packets Delivered")
+    ax_succ.grid(True, ls='-', alpha=0.15, color='gray')
+    ax_succ.legend(frameon=True, fancybox=False, edgecolor='gray', loc='lower left')
+    plt.tight_layout()
+    plt.savefig("output/v11_Distance_Success.png", dpi=200, bbox_inches='tight')
+    print("[OK] output/v11_Distance_Success.png")
     plt.close('all')
