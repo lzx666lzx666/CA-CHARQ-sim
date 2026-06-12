@@ -946,40 +946,33 @@ if __name__ == "__main__":
     plt.close('all')
 
     # ==========================================
-    # Helper数量扫 — 展示空间分集效应
+    # Helper数量扫 — 空间分集效应 (仅CA-CHARQ)
     # ==========================================
-    H_LIST = [1, 3, 5, 7]
+    H_LIST = [1, 2, 3, 4, 5]
     FIXED_SNR_H = 0.0
     SIM_T_H = 5000
     N_RUNS_H = 3
     
     print(f"\n{'='*65}")
-    print(f" Helper count sweep: {H_LIST}, SNR={FIXED_SNR_H}dB, SimTime={SIM_T_H}s")
+    print(f" Helper count sweep (CA-CHARQ only): {H_LIST}, SNR={FIXED_SNR_H}dB, SimTime={SIM_T_H}s")
     print("=" * 65)
     
-    h_results = {p: {'delay': ([], [])} for p in PROTOCOLS}
-    for proto in PROTOCOLS:
-        print(f"  Protocol: {proto}")
-        for n in H_LIST:
-            r = mc_run(FIXED_SNR_H, proto, SIM_T_H, N_RUNS_H, n_helpers=n)
-            h_results[proto]['delay'][0].append(r['delay_mean'])
-            h_results[proto]['delay'][1].append(r['delay_ci95'])
-            print(f"    N_helpers={n} | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | Succ={r['avg_success']:.0f}")
+    ca_delays = []; ca_cis = []
+    for n in H_LIST:
+        r = mc_run(FIXED_SNR_H, PROTO_CA, SIM_T_H, N_RUNS_H, n_helpers=n)
+        ca_delays.append(r['delay_mean'])
+        ca_cis.append(r['delay_ci95'])
+        print(f"  N_helpers={n} | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | Succ={r['avg_success']:.0f}")
     
-    x_h = H_LIST
-    fig_h, ax_h = plt.subplots(1, 1, figsize=(7, 5))
-    for proto in PROTOCOLS:
-        y = np.array(h_results[proto]['delay'][0]); mask = ~np.isnan(y)
-        if mask.any():
-            xm = np.array(x_h)[mask]
-            ax_h.plot(xm, y[mask], MARKERS[proto]+'-',
-                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
-                     markerfacecolor='white', markeredgecolor=COLORS[proto],
-                     markeredgewidth=0.8)
-    ax_h.set_xlabel("Number of Helpers per Hop")
-    ax_h.set_ylabel("End-to-End Delay (s)")
-    ax_h.grid(True, ls='-', alpha=0.15, color='gray')
-    ax_h.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
+    fig_h2, ax_h2 = plt.subplots(1, 1, figsize=(6, 4.5))
+    y = np.array(ca_delays); mask = ~np.isnan(y)
+    xm = np.array(H_LIST)[mask]
+    ax_h2.plot(xm, y[mask], 'o-', color='#C44E52', lw=2.0, ms=8,
+               markerfacecolor='white', markeredgecolor='#C44E52', markeredgewidth=1.5)
+    ax_h2.set_xlabel("Number of Helpers per Hop")
+    ax_h2.set_ylabel("End-to-End Delay (s)")
+    ax_h2.set_title("CA-CHARQ Delay vs Helper Count (SNR=0dB)")
+    ax_h2.grid(True, ls='-', alpha=0.15, color='gray')
     plt.tight_layout()
     plt.savefig("output/v11_Helpers_Delay.png", dpi=200, bbox_inches='tight')
     print("\n[OK] output/v11_Helpers_Delay.png")
