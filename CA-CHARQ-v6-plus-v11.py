@@ -592,11 +592,15 @@ class Channel:
 # ==========================================
 # 8. 仿真执行
 # ==========================================
-def run_sim(snr_db, protocol, sim_time, seed=0, hop_dist=None, fixed_noise_var=None):
+def run_sim(snr_db, protocol, sim_time, seed=0, hop_dist=None, fixed_noise_var=None, n_helpers=None):
     if hop_dist is not None:
         global HOP_DIST
         saved_dist = HOP_DIST
         HOP_DIST = hop_dist
+    if n_helpers is not None:
+        global N_HELPERS_PER_HOP
+        saved_helpers = N_HELPERS_PER_HOP
+        N_HELPERS_PER_HOP = n_helpers
     random.seed(seed); np.random.seed(seed)
     env = simpy.Environment()
     stats = StatsTracker(sim_time)
@@ -680,14 +684,15 @@ def run_sim(snr_db, protocol, sim_time, seed=0, hop_dist=None, fixed_noise_var=N
 # ==========================================
 # 9. 蒙特卡洛
 # ==========================================
-def mc_run(snr_db, protocol, sim_time, n_runs, hop_dist=None, fixed_noise_var=None):
+def mc_run(snr_db, protocol, sim_time, n_runs, hop_dist=None, fixed_noise_var=None, n_helpers=None):
     delays, ovhds, tputs, drops, ees = [], [], [], [], []
     succs, data_txs, nack_txs = [], [], []
 
     for run_i in range(n_runs):
         s = abs(42 + run_i * 7919 + int(snr_db * 3571) + (1 << 20)) % (2**31 - 1)
         r = run_sim(snr_db, protocol, sim_time, seed=s,
-                    hop_dist=hop_dist, fixed_noise_var=fixed_noise_var)
+                    hop_dist=hop_dist, fixed_noise_var=fixed_noise_var,
+                    n_helpers=n_helpers)
 
         delays.append(r['delay'] if not math.isnan(r['delay']) else None)
         ovhds.append(r['overhead'] if not math.isnan(r['overhead']) else None)
@@ -938,4 +943,44 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig("output/v11_Distance_Success.png", dpi=200, bbox_inches='tight')
     print("[OK] output/v11_Distance_Success.png")
+    plt.close('all')
+
+    # ==========================================
+    # Helper数量扫 — 展示空间分集效应
+    # ==========================================
+    H_LIST = [1, 3, 5, 7]
+    FIXED_SNR_H = 0.0
+    SIM_T_H = 5000
+    N_RUNS_H = 3
+    
+    print(f"\n{'='*65}")
+    print(f" Helper count sweep: {H_LIST}, SNR={FIXED_SNR_H}dB, SimTime={SIM_T_H}s")
+    print("=" * 65)
+    
+    h_results = {p: {'delay': ([], [])} for p in PROTOCOLS}
+    for proto in PROTOCOLS:
+        print(f"  Protocol: {proto}")
+        for n in H_LIST:
+            r = mc_run(FIXED_SNR_H, proto, SIM_T_H, N_RUNS_H, n_helpers=n)
+            h_results[proto]['delay'][0].append(r['delay_mean'])
+            h_results[proto]['delay'][1].append(r['delay_ci95'])
+            print(f"    N_helpers={n} | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | Succ={r['avg_success']:.0f}")
+    
+    x_h = H_LIST
+    fig_h, ax_h = plt.subplots(1, 1, figsize=(7, 5))
+    for proto in PROTOCOLS:
+        y = np.array(h_results[proto]['delay'][0]); mask = ~np.isnan(y)
+        if mask.any():
+            xm = np.array(x_h)[mask]
+            ax_h.plot(xm, y[mask], MARKERS[proto]+'-',
+                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
+                     markerfacecolor='white', markeredgecolor=COLORS[proto],
+                     markeredgewidth=0.8)
+    ax_h.set_xlabel("Number of Helpers per Hop")
+    ax_h.set_ylabel("End-to-End Delay (s)")
+    ax_h.grid(True, ls='-', alpha=0.15, color='gray')
+    ax_h.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
+    plt.tight_layout()
+    plt.savefig("output/v11_Helpers_Delay.png", dpi=200, bbox_inches='tight')
+    print("\n[OK] output/v11_Helpers_Delay.png")
     plt.close('all')
