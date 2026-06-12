@@ -1,0 +1,316 @@
+================================================================================
+CA-CHARQ 置信度自适应协作HARQ — 论文大纲 v1
+日期: 2026-06-09
+版本: 基于v11 (Rayleigh K=0 + MIEDSM L2S + 差异化helper功率)
+================================================================================
+
+一、标题
+──────────────────────────────────────────────────────────────
+水下声学多跳传感器网络中基于置信度量化的自适应协作HARQ协议
+
+Confidence-Adaptive Cooperative HARQ with Quantized Feedback 
+for Multi-Hop Underwater Acoustic Sensor Networks
+
+
+二、摘要（约200字）
+──────────────────────────────────────────────────────────────
+针对水下声学传感器网络中长传播延迟导致传统C-HARQ冗余效率低下
+的问题，提出置信度自适应协作HARQ (CA-CHARQ)协议。核心机制包
+括：(1)基于Shannon容量互信息映射计算置信度Cpkt(0-3)，量化后
+嵌入NACK反馈闭环;(2)多helper通过瓶颈距离加权竞争选出最优协作
+节点，按Cpkt自适应发送RV1-3校验块(30-90块);(3)源端在高置信条
+件下启用Grace Period等待helper响应，成功后跳过自身重传。
+
+5跳Rayleigh多径拓扑下的仿真表明：CA-CHARQ端到端延迟在0-3.5dB
+全域领先C-HARQ 5-11%；0dB处开销首次低于所有协作协议(12.72
+vs C-HARQ 13.90)；距离增至1000m时成功交付数达C-HARQ的2.8倍
+(124 vs 44包)，开销仅27.58。helper从1增至5时延迟下降10.5%，
+验证竞争机制的空间分集增益。
+
+
+三、引言
+──────────────────────────────────────────────────────────────
+3.1 水下声学传感器网络背景与挑战
+    - 载波频率10-50kHz, 声速1500m/s (比射频低5个数量级)
+    - 长传播延迟（600m需0.4s）→ 每跳RTT≈14s → 重传代价极高
+    - 频率相关吸收（Thorp公式）→ 远距Shannon容量急剧下降
+    - 多径散射（Rayleigh衰落，无直射径）
+    - 传感器节点全电池供电、不可更换 → 能耗致命
+
+3.2 现有协作HARQ方案及不足
+    (a) C-HARQ (Ghosh 2013)：RCPC码在helper端生成固定校验块
+        Pac-1(50块)+Pac-2(40块)，无条件连发 → 信道好时浪费
+    (b) C-ARQ：helper发送完整RV0 (100块) → 无IR增益
+    (c) S-DCC (Chen 2019)：协作节点主动重传、消去NACK等待 →
+        但冗余量不随信道条件自适应
+    (d) Goutham 2021系列：理论和ns-3仿真验证了C-HARQ存在"阈
+        值距离"——短距无需协作，远距协作压倒非协作
+    (e) 共同不足：(1)冗余量固定不随信道自适应;(2)helper预设
+        而非动态竞争;(3)无置信度反馈机制
+
+3.3 本文贡献
+    (a) 置信度量化反馈闭环：目的端基于累积软信息计算归一化解码
+        裕度(delta_db),量化为Cpkt(0-3)嵌入NACK包头反馈
+    (b) 瓶颈距离加权竞争：得分含置信度+剩余能量+max(源→h, h→
+        目的)距离，分层fallback退避(高得分零退避/低SNR预选首发)
+    (c) Grace Period源端等待：cpkt≥3时等待helper响应(3-5s)，
+        成功后跳过源端RV0重传(省100块)
+    (d) 自适应RV：helper按Cpkt选择RV1(30)/RV2(60)/RV3(90)，
+        高置信少发校验
+    (e) 基于Shannon容量的L2S抽象解码接口：以解析Sigmoid替代
+        实际编解码器，确保四种协议在公平PHY模型下对照
+    (f) 差异化helper功率：helper按物理距离缩放发射功率
+        (Tx∝d^1.5)，距离近→低功率→高效能效
+
+
+四、系统模型
+──────────────────────────────────────────────────────────────
+4.1 网络拓扑
+    - 5跳线性拓扑，每跳600米。源节点0 → 中继节点1-4 → 目的节点5
+    - 每跳3个helper随机部署在源-目的圆交叠区域(图1)
+    - C-HARQ/C-ARQ：预选距离中点最近者作固定协作节点
+      CA-CHARQ：预选瓶颈距离最优者，全3helper参与竞争(或cpkt≤1
+      时仅预选helper发送)
+    - 稀疏发包：指数分布exp(30s)，仿真8000s ≈ 260包/协议
+    - 蒙特卡洛：每SNR点5次独立运行，随机种子公式保证公平
+
+4.2 水声信道模型
+    - Thorp频率相关吸收：α(f)=0.11f²/(1+f²)+44f²/(4100+f²)
+      +2.75×10⁻⁴f²+0.003 [dB/km]
+    - 载波频率f=20kHz → α≈4.1dB/km
+    - 传播损耗：TL(d)=d^1.5×10^(αd/10) (柱面扩展+吸收)
+    - 多径衰落：Rayleigh (K=0)，每chunk独立采样
+    - 等效AWGN噪声：调节噪声方差使600m接收SNR精确匹配目标值
+    - 环境变量(SL/TL/NL)不单独设置，等效为SNR参数控制
+
+4.3 L2S抽象解码接口（适用于全部四个协议）
+    解码成功性判定通过两层解析公式实现，不做实际编解码：
+    Layer 1 — Shannon互信息映射：
+        mi_i = log₂(1+SNR_i)                         逐chunk计算
+        avg_mi = mean(mi_i)                           算术平均
+        SNR_eff = 2^avg_mi − 1                        反演等效SINR
+    Layer 2 — 码率相关的Sigmoid BLER预测：
+        R = 100 / n_active                            当前等效码率
+        SNR_50 = (2^R−1) + (2.5−R)                   50%BLER参考SNR
+        BLER = 1/(1+exp(4.0 × (SNR_eff − SNR_50)))   S形预测
+        Dec(success) ⟺ random() > BLER                Bernoulli判定
+    等效原理：Chase合并使SNR_i线性增大(最大比合并)→avg_mi升→
+    SNR_eff升→BLER降。IR新增使n_active升→R降→SNR_50降→BLER降。
+    两条路径分别对应重复合并和新信息增益。
+
+4.4 RV分片体系
+    ┌───────┬────────────┬────────┬──────────────┐
+    │ 分片  │ 块索引     │ 块数   │ 传输时间     │
+    ├───────┼────────────┼────────┼──────────────┤
+    │ RV0   │ [0,100)    │ 100    │ 6.67s (源端) │
+    │ RV1   │ [100,130)  │ 30     │ 2.00s        │
+    │ RV2   │ [100,160)  │ 60     │ 4.00s        │
+    │ RV3   │ [100,190)  │ 90     │ 6.00s        │
+    │ Pac-1 │ [100,150)  │ 50(C-HARQ专用)│3.33s │
+    │ Pac-2 │ [150,190)  │ 40(C-HARQ专用)│2.67s │
+    └───────┴────────────┴────────┴──────────────┘
+    设计原则：190=CHUNKS_SYS+CHUNKS_PARITY_MAX，对应RCPC mother
+    code长度。RV1-3取30/60/90块为线性三档。C-HARQ Pac-1+2=90块
+    =RV3同池。
+
+4.5 软信息合并
+    目的端维护190维soft_buffer[pid]向量（每包一个）：
+    - fec_idx>0（C-HARQ FEC包）→累加到分片区域（IR合并）
+    - rv_level>0（CA-CHARQ校验包）→累加到start:end（IR合并）
+    - 其余（RV0系统数据）→累加到[0:100]（Chase/最大比合并）
+    多次重传对同一chunk位置反复累加SNR值(+操作)，不扩展数组。
+
+4.6 发射功率与能耗模型
+    - 源端/中继：统一15W
+    - CA-CHARQ helper：按(d_dst/600)^1.5缩放 → 35-70%源端功率
+    - 功耗来源：仅发射阶段(mW级接收/空闲未建模)
+    - 能效指标：有用bit总数/总发射能耗 (bits/Joule)
+    - 开销（独立于功率）：总发送chunk数/(成功包×100)
+
+
+五、CA-CHARQ协议设计
+──────────────────────────────────────────────────────────────
+5.1 置信度量化
+    在4.3节L2S接口基础上，定义解码裕度delta_db=SNR_eff−SNR_50，
+    量化为4级Cpkt：
+        delta_db > −0.2  → Cpkt=3 (高置信)
+        delta_db > −2.0  → Cpkt=2 (中置信)
+        delta_db > −3.5  → Cpkt=1 (低置信)
+        否则            → Cpkt=0 (极低置信)
+    Cpkt嵌入NACK包头反馈给源端和helper，直接驱动Grace和RV决策。
+
+5.2 源端发送循环(tx_loop)
+    (a) 发送RV0 → 等待ACK/NACK/超时(gto=7.3s=RTT+T_WIN×3+2.0)
+    (b) NACK且Cpkt≥3 → Grace Period：
+        Grace_t = rv_tx_t + T_WINDOW/4 + 3×prop + 0.3s
+        yield Grace超时 | helper_ack_event[pid]
+        ACK先到→hop_ok，超时→源端重发RV0
+    (c) NACK且Cpkt<3 → 无Grace → 直接重发RV0
+
+5.3 目的端处理逻辑(handle)
+    (a) 接收DATA → 累加soft_buffer → L2S判解码成败
+    (b) 成功 → ACK → (若为目的端)统计E2E延迟 / (若为中继)入队转发
+    (c) 失败 → 仅对源端数据(hop_tx==hop_source)发送NACK_cpkt
+        NACK上限条件化：Cpkt≥3时3次,否则1次
+
+5.4 Helper竞争机制(contend)
+    得分公式：
+        d_neck = max(dist_to_source, dist_to_dest)   ^瓶颈距离
+        score = 0.40×min(c_pkt,1.5)
+              + 0.25×max(0,min(1, energy/INIT))
+              + 0.35/(1 + prop_neck/0.4s)
+
+    退避分层fallback：
+        score>0.90 → t=0 (零退避，高分直接发)
+        cpkt<3 && is_low_snr_selected → t=0.02s (瓶颈最优首发)
+        其余 → t=(1-score)×T_WINDOW×2 + 0.05s
+
+    竞争取消：helper发送DATA广播 -> 其余helper监听触发
+              cancel_event[pid].succeed() → 退让
+
+    获胜helper按Cpkt发送自适应RV：
+        Cpkt≥2 → RV1(30块, 2.0s)   ^高置信仅需少量校验
+        Cpkt=1 → RV2(60块, 4.0s)
+        Cpkt=0 → RV3(90块, 6.0s)
+    源端始终发RV0(系统数据)，仅helper侧自适应，各司其职。
+
+5.5 低SNR时的简化处理（v11关键优化）
+    cpkt≤1时竞争机制跳过(contend直接返回)。在NACK handler中，
+    仅瓶颈最优预选helper(is_low_snr_selected)直接发送RV2(60块)
+    或RV3(90块)。这消除了低SNR时3-helper竞争调度开销，使0-0.5dB
+    开销从v10的15.06降至12.72(−15%)。低SNR下helper解码概率低，
+    竞争选出的helper未必能解码→竞争收益为负→跳过竞争。
+
+5.6 Grace Period ACK触发
+    源端进入Grace时创建helper_ack_event对象并存入字典。
+    同时启动Grace超时定时器。yield超时|事件。目的端helper
+    响应解码成功后发ACK→源端ACK handle中检查helper_ack_events
+    [pid]→触发事件→yield返回→hop_ok=True→源端跳过重传。
+
+
+六、对比协议简述
+──────────────────────────────────────────────────────────────
+6.1 S&W ARQ
+    无协作节点，仅源端做Chase重传。0dB延迟93s、开销10.6。延迟
+    最高但开销最低（无helper能耗）。Rayleigh深衰落受冲击最大。
+
+6.2 C-ARQ
+    每跳1预选helper（距中点最近）。源端+helper均发完整RV0(100块)。
+    目的端纯Chase合并，无IR增益。开销与延迟均高于C-HARQ。
+
+6.3 C-HARQ (Ghosh 2013)
+    每跳1预选helper。听到NACK后主动连发Pac-1(50块)+Pac-2(40
+    块)=90块校验。目的端同时Chase+IR。开销和延迟居中。
+
+
+七、仿真参数汇总
+──────────────────────────────────────────────────────────────
+ 载波频率           20 kHz               Thorp α≈4.1dB/km
+ 信道衰落           Rayleigh (K=0)      每chunk独立采样
+ 源端发射功率       15 W                全向换能器(全协议)
+ Helper发射功率    按(d_dst/600)^1.5缩放CA-CHARQ特有
+ 每跳Helper数       3(竞争选出1个)      低SNR时1预选
+ 每跳距离           600米              5跳共3公里
+ 仿真时长           15000秒            约500数据包/协议(主仿)
+ 数据包间隔         指数分布exp(30s)    稀疏发包(实际水下场景)
+ 蒙特卡洛轮次       5次               每SNR点独立运行5轮
+ 目标信噪比区间     0.0-4.0 dB         0.5步长，共9点
+ 距离扫仿真时长     8000秒+5轮         400/600/800/1000m四点
+ Helper扫仿真时长   5000秒+3轮         1/2/3/4/5 helper五点
+
+
+八、仿真结果与分析
+──────────────────────────────────────────────────────────────
+8.1 延迟 vs SNR (图v11_Delay_Overhead.png左半)
+    CA-CHARQ全程最低(0dB=76s,S&W=93s,C-HARQ=83s)。四条线单调下
+    降到4dB汇聚(~38s)。0-3.5dB领先C-HARQ 5-11%。Rayleigh下S&W
+    上升最剧烈(无空间分集)，CA-CHARQ的瓶颈距离竞争确保最优helper。
+
+8.2 开销 vs SNR (图v11_Delay_Overhead.png右半)
+    CA-CHARQ在0-0.5dB首次低于所有协作协议(12.72 vs C-HARQ 13.90,
+    C-ARQ 14.24)，这是v11 cpkt≤1跳过竞争带来的关键突破。协作开销
+    呈"拱形"——0-2dB处比值最大(源端重传↓但helper开销仍存)→2.5dB
+    起Grace激活(开销骤降21%)→3.5-4dB全线收敛至~5.3x。
+
+8.3 能效 vs SNR (图v11_EE.png)
+    S&W全程压制协作协议(无helper负担)至3.0dB，CA-CHARQ在3.0dB反
+    超(12.2 vs 11.8)。Rayleigh下反超点比Rician推迟约0.5dB(3.0 vs 
+    2.5)。差异化helper功率(Tx∝d^1.5)是能效提升的关键使能技术。
+
+8.4 距离扫描(三图, 固定噪声0dB@600m基准, SIM_TIME=8000s×5轮)
+    8.4.1 延迟-距离(图v11_Distance_Delay_Overhead.png左半)
+          400m全协议重叠(~40s)→600m CA领先10%(75 vs 83s)→
+          800m CA领先39%(561 vs 925s)→1000m趋近(~2300s, 源端
+          4-5次重传主导延迟，物理上限)。
+    8.4.2 开销-距离(图v11_Distance_Delay_Overhead.png右半)
+          600m CA 12.73 < C-HARQ 13.90。1000m CA 27.58，
+          C-HARQ 82.05 — 节省66%传输资源。
+    8.4.3 成功包数-距离(图v11_Distance_Success.png)
+          1000m CA 124包 = 2.8×C-HARQ(44包) = 4.6×S&W(27包)。
+          同等传输预算下多实现180%的数据交付。IR+自适应RV+Grace
+          +竞争四机制协同作用的最直接可视化。
+
+8.5 Helper数量扫(图v11_Helpers_Delay.png，仅CA-CHARQ)
+    CA-CHARQ延迟从1helper(82.4s)→5helper(73.7s)下降10.5%。
+    最大跳变在1→2(5.8s)。此后(3-5 helper)遵从边际递减规律。
+    验证了竞争机制的空间分集增益——更多helper增加候选池→更高
+    概率选出深衰最浅的最优路径。
+
+8.6 关键发现总结
+    (a) CA-CHARQ在0-3.5dB全域延迟领先C-HARQ 5-11%。
+    (b) 0-0.5dB开销突破——首次低于所有协作协议(12.72)。
+    (c) 3.0dB能效反超S&W，验证Goutham 2021协作阈值理论。
+    (d) 1000m成功包数2.8x C-HARQ，开销仅34%。
+    (e) 空间分集效应：helper插1→5延迟降10.5%。
+
+
+九、结论
+──────────────────────────────────────────────────────────────
+本文提出了CA-CHARQ，一个面向水声多跳传感器网络的置信度自适应协作
+HARQ协议。其核心创新在于：(1)将MIESM解码裕度量化为Cpkt，建立反
+馈驱动的闭环自适应；(2)通过瓶颈距离加权竞争实现多helper动态择优；
+(3)通过Grace Period在高置信时节省源端重传。
+
+仿真结果验证了协议的设计有效性。在0-3.5dB Rayleigh多径环境下，
+延迟领先C-HARQ 5-11%；0dB开销首次低于所有协作协议；1000m远距
+离处开销仅为C-HARQ的34%且吞吐量为其2.8倍。Helper数量扫描确认
+了竞争机制的空间分集增益（1→5 helper延迟降10.5%）。
+
+未来工作可扩展至三维随机部署、时变信道、以及MAC层协同设计。此外，
+理论方向上可探索马尔可夫链吸收态模型对CA-CHARQ端到端PER的解析
+刻画。
+
+
+十、参考文献
+──────────────────────────────────────────────────────────────
+[1] A. Ghosh, J. Lee, and H. Cho, "Throughput and Energy Efficiency 
+    of a Cooperative Hybrid ARQ Protocol for Underwater Acoustic 
+    Sensor Networks," Sensors, vol.13, no.11, pp.15385-15408, 2013.
+
+[2] V. Goutham and V. P. Harigovindan, "Analytical Modelling and 
+    Performance Enhancement of Cooperative HARQ Scheme for 
+    Underwater Acoustic Sensor Networks," SN Computer Science, 
+    vol.2, no.108, pp.1-7, 2021.
+
+[3] V. Goutham and V. P. Harigovindan, "Modeling and Analysis of 
+    Hybrid ARQ Scheme for Incremental Cooperative Communication in 
+    Underwater Acoustic Sensor Networks," Iranian J. Sci. Technol. 
+    Trans. Electr. Eng., vol.45, pp.279-294, 2021.
+
+[4] V. Goutham and V. P. Harigovindan, "Stochastic modelling and 
+    performance analysis of cooperative HARQ in multi-cluster 
+    underwater acoustic sensor networks," Sādhanā, vol.46, no.12, 
+    pp.1-5, 2021.
+
+[5] Y. Chen, X. Jin, L. Wan, X. Zhang, and X. Xu, "Selective Dynamic 
+    Coded Cooperative Communications for Multi-Hop Underwater 
+    Acoustic Sensor Networks," IEEE Access, vol.7, pp.70552-70563, 
+    2019.
+
+[6] W. H. Thorp, "Analytic description of the low-frequency 
+    attenuation coefficient," J. Acoust. Soc. Am., vol.42, no.1, 
+    pp.270-270, 1967.
+
+================================================================================
+大纲结束
+================================================================================
