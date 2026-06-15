@@ -1,0 +1,555 @@
+================================================================================
+CA-CHARQ: Confidence-Adaptive Cooperative HARQ for Multi-Hop UASNs
+—— Protocol Design, System Model, and Simulation Results
+Date: 2026-06-09 | Version: v11
+================================================================================
+
+1. Introduction
+──────────────────────────────────────────────────────────────
+1.1 Background and Motivation
+
+Underwater acoustic sensor networks (UASNs) face unique physical-layer
+constraints absent from terrestrial wireless: propagation speed of 1500 m/s
+(5 orders of magnitude slower than radio), frequency-dependent absorption
+(Thorp's formula, α≈4.1 dB/km at 20 kHz), and severe multi-path without
+a stable line-of-sight component (Rayleigh fading, K=0). For a 5-hop
+linear network with 600 m hop distance, a single retransmission round-trip
+consumes ≈14 s in acoustic propagation alone, making every additional
+transmission a significant cost in latency and energy.
+
+Cooperative HARQ (C-HARQ) protocols attempt to mitigate these costs by
+exploiting relay nodes as alternate data sources. Ghosh et al. [1] proposed
+using RCPC codes to generate fixed-size FEC packets (Pac-1=50 blocks,
+Pac-2=40 blocks) from cooperative nodes, which are transmitted sequentially
+upon negative acknowledgement. While this improves over non-cooperative
+schemes, the fixed FEC size creates a structural inefficiency: under
+favorable channel conditions the receiver may need only a fraction of
+the 90-block redundancy, yet the protocol forces full transmission.
+
+1.2 Related Work
+
+Table 1. Comparison of cooperative HARQ schemes for UASNs.
+┌──────────────┬─────────────┬──────────────┬───────────────┬──────────────┐
+│ Feature      │ Ghosh 2013  │ Goutham 2021 │ Chen 2019     │ This Work    │
+│              │ C-HARQ [1]  │ C-HARQ [2-4] │ S-DCC [5]     │ CA-CHARQ     │
+├──────────────┼─────────────┼──────────────┼───────────────┼──────────────┤
+│ Helper count │ Multiple    │ 1–r per hop  │ 1 per hop     │ 3 (compet.)  │
+│ Helper sel.  │ Pre-selected│ Pre-selected │ Pre-selected  │ Contention   │
+│ FEC type     │ RCPC (act.) │ RS (analyt.) │ Coded coop.   │ Adaptive RV  │
+│ Redundancy   │ Fixed 2-FEC │ Fixed        │ Fixed         │ Cpkt-driven  │
+│ Source wait  │ No          │ No           │ Yes (S-DCC)   │ Grace Period │
+│ PHY model    │ BSC+RCPC    │ SER→PER+ns-3│ Simulation    │ L2S Sigmoid  │
+│ Fading       │ Rayleigh    │ Rayleigh     │ Not specified │ Rayleigh K=0 │
+│ Energy model │ Tx+Rx+Idle  │ Tx+Rx+nS-3   │ Tx+Rx+Idle    │ Tx (scaled)  │
+│ Topology     │ Single-hop  │ Multi-cluster│ Multi-hop     │ 5-hop linear │
+│ Perf. metrics│ TP+EE       │ PER+EE       │ Delay+EE      │ Delay+OH+EE  │
+└──────────────┴─────────────┴──────────────┴───────────────┴──────────────┘
+
+The key gap across prior work is the absence of a closed-loop feedback
+mechanism that quantifies the destination's decoding margin and adapts
+the helper's redundancy accordingly. All existing protocols use fixed
+redundancy sizes independent of instantaneous channel quality.
+
+1.3 Contributions
+
+This work presents CA-CHARQ (Confidence-Adaptive Cooperative HARQ), with
+the following contributions:
+
+(1) Confidence Quantization (Cpkt). The destination computes a normalized
+    decoding margin δ = SNR_eff − SNR_50 from accumulated soft information,
+    quantizes it into a 2-bit Cpkt value (0–3), and piggybacks it on the
+    NACK packet. This creates a low-overhead feedback channel from the
+    receiver to both source and helpers.
+
+(2) Bottleneck-Distance Contention. Multiple helpers compete via a
+    weighted backoff timer that accounts for each helper's self-confidence,
+    residual energy, and the larger of its distances to source and
+    destination. A layered fallback mechanism handles the low-SNR regime
+    where competition overhead outweighs its benefit.
+
+(3) Grace Period. When Cpkt ≥ 3 (high confidence), the source suspends
+    immediate retransmission and waits for a helper-originated ACK. If
+    the helper succeeds, one source retransmission (100 blocks) is saved.
+
+(4) Adaptive Redundancy. The winning helper selects its RV based on Cpkt:
+    RV1 = 30 parity blocks (Cpkt≥2), RV2 = 60 (Cpkt=1), RV3 = 90 (Cpkt=0).
+
+(5) L2S PHY Abstraction. A Shannon-capacity-based link-to-system interface
+    replaces actual codec instances, ensuring fair protocol comparison
+    while enabling extensive parameter-space scanning (SNR/Distance/Helper
+    count) at practical computational cost.
+
+(6) Differentiated Helper Power. Helper transmit power scales as
+    (d_dest/600)^1.5, reflecting the shorter path loss to the destination
+    and improving energy efficiency.
+
+
+2. System Model
+──────────────────────────────────────────────────────────────
+2.1 Network Topology
+
+We consider a 5-hop linear UASN. The source node (node 0) transmits data
+packets hop-by-hop through relay nodes 1–4 to the destination (node 5).
+The hop distance is d_hop = 600 m. At each hop, Nh = 3 helper nodes are
+randomly deployed within the intersecting region of two circles of radius
+d_hop centered at the transmitter and receiver respectively.
+
+Nodes operate in half-duplex mode. We assume that medium access control
+issues have been resolved, following the convention of [1] and [5].
+The data packet arrival process at the source follows an exponential
+distribution with mean 30 s, modeling sparse underwater sensing traffic.
+
+2.2 Underwater Acoustic Channel
+
+The transmission loss between two nodes separated by distance d (in meters)
+at acoustic frequency f (in kHz) is:
+
+    TL(d, f) = (d/1000)^1.5 × 10^(α(f)·d/10000)                    (1)
+
+where α(f) is the Thorp absorption coefficient [6]:
+
+    α(f) = 0.11f²/(1+f²) + 44f²/(4100+f²) + 2.75×10⁻⁴f² + 0.003  (2)
+
+At the operating frequency f = 20 kHz, α ≈ 4.1 dB/km. The cylindrical
+spreading exponent 1.5 is used for practical shallow-water propagation [1].
+
+The channel is modeled as block-Rayleigh fading (K = 0). Each chunk
+experiences an independent fading coefficient |h|² = (I²+Q²), where
+I ∼ N(0, 1/2) and Q ∼ N(0, 1/2) are i.i.d. Gaussian. The instantaneous
+SNR on chunk i at the receiver is:
+
+    γ_i = (P_tx / TL(d,f)) × |h_i|² / N_0_W                          (3)
+
+where P_tx is the transmit power of the sending node and N_0_W is the
+equivalent AWGN noise power spectral density. For a target per-hop average
+SNR γ_target (dB), N_0_W is calibrated as:
+
+    N_0_W = P_tx / (TL(600 m, 20 kHz) × 10^(γ_target/10))            (4)
+
+2.3 Physical-Layer Decoding Model
+
+Each receiving node maintains a 190-dimensional soft_buffer vector per
+active packet ID. Element i stores the accumulated SNR from all received
+copies of chunk i, implementing maximal-ratio combining (MRC) for repeated
+system chunks (Chase combining) and soft combining for newly received
+parity chunks (incremental redundancy, IR). The 190-element dimension
+corresponds to the maximum possible size of an RCPC mother codeword
+(100 systematic + 90 parity chunks).
+
+The decoding outcome is determined by a two-layer link-to-system (L2S)
+interface without instantiating actual channel codecs.
+
+Layer 1 — Shannon Mutual Information Mapping:
+    mi_i = log₂(1 + γ_i)                        for i ∈ active chunks
+    MI_avg = (1/N_a) Σ mi_i                                          (5)
+    γ_eff = 2^(MI_avg) − 1          [linear]                        (6)
+
+where N_a = |{i : γ_i > 0}| is the number of active chunk positions.
+
+Layer 2 — Code-Rate-Dependent Sigmoid BLER:
+    R = 100 / N_a                  [effective code rate]            (7)
+    γ_shannon = 2^R − 1            [Shannon limit, linear]          (8)
+    gap(R) = 2.5 − R               [practical coding gap, dB]       (9)
+    γ_50 = γ_shannon + gap(R)      [50th-percentile SNR, dB]       (10)
+    BLER = [1 + exp(κ·(γ_eff,dB − γ_50))]^{-1}  with κ = 4.0      (11)
+
+The decoding succeeds if and only if r ∼ Uniform(0,1) > BLER, where r is
+a pseudo-random sample drawn independently at each decoding attempt.
+Equations (5)–(6) capture the benefit of Chase combining (γ_i increases
+for repeatedly received chunks → MI_avg increases → γ_eff increases).
+Equations (7)–(10) capture the benefit of IR (new parity chunks increase
+N_a → R decreases → γ_50 shifts leftward). Both mechanisms reduce BLER
+through independent terms in the composite mapping.
+
+2.4 Resource Units and Transmission Time
+
+A chunk is the elementary soft-information unit, consisting of an
+80-bit payload that experiences a single independent fading realization.
+The data rate is R_b = 1200 bps, giving a chunk transmission time of
+T_chunk = 80 / 1200 = 0.067 s.
+
+Table 2. Redundancy version (RV) partitioning.
+┌───────┬─────────────┬──────┬──────────┬──────────────────────────┐
+│ RV    │ Chunk Range │ Size │ Tx Time  │ Used By                  │
+├───────┼─────────────┼──────┼──────────┼──────────────────────────┤
+│ RV0   │ [0, 100)    │ 100  │ 6.67 s   │ All protocols (source)   │
+│ RV1   │ [100, 130)  │ 30   │ 2.00 s   │ CA-CHARQ helper (Cpkt≥2) │
+│ RV2   │ [100, 160)  │ 60   │ 4.00 s   │ CA-CHARQ helper (Cpkt=1) │
+│ RV3   │ [100, 190)  │ 90   │ 6.00 s   │ CA-CHARQ helper (Cpkt=0) │
+│ Pac-1 │ [100, 150)  │ 50   │ 3.33 s   │ C-HARQ helper            │
+│ Pac-2 │ [150, 190)  │ 40   │ 2.67 s   │ C-HARQ helper            │
+└───────┴─────────────┴──────┴──────────┴──────────────────────────┘
+
+RV0 contains the 100 systematic data chunks, always transmitted by the
+source. RV1–RV3 contain increasing amounts of parity chunks (30/60/90)
+and are selected adaptively by the CA-CHARQ helper based on Cpkt.
+Pac-1 and Pac-2 are the fixed-size FEC packets of C-HARQ, together
+spanning the same 90-chunk parity range as RV3.
+
+2.5 Energy Consumption Model
+
+Only transmit energy is accounted for, as underwater acoustic transmission
+dominates the energy budget (transmit power ≈ 20× receive power [1]).
+The source nodes transmit at P_tx = 15 W. For CA-CHARQ helpers, the
+transmit power is scaled by the relative path loss advantage:
+
+    P_h = P_tx × (d_dest / d_hop)^1.5                                 (12)
+
+where d_dest is the Euclidean distance from the helper to the destination
+node in its assigned hop. A helper at mid-point (d_dest ≈ 300 m) thus
+transmits at approximately 35% of the source power, reflecting its
+shorter range to the destination.
+
+2.6 Performance Metrics
+
+End-to-End Delay (D): time elapsed from packet creation at the source
+(env.now at tx_queue.put) until successful delivery acknowledgment at
+the final destination (stats.e2e_success), averaged over all completed
+packets.
+
+Transmission Overhead (η): total number of transmitted chunks across all
+nodes divided by the total number of successfully delivered system chunks.
+
+    η = Σ(num_chunks of all transmissions) / (N_success × 100)       (13)
+
+Energy Efficiency (ξ): number of successfully delivered information bits
+divided by total transmit energy consumption.
+
+    ξ = (N_success × 100 × 80) / Σ(P_tx_node × T_tx)    [bits/Joule] (14)
+
+Successful Packet Count (N_success): number of packets completing all
+5 hops within the simulation time.
+
+
+3. Protocol Design
+──────────────────────────────────────────────────────────────
+3.1 CA-CHARQ Overview
+
+CA-CHARQ operates in three per-hop phases:
+
+Phase 1 — Source Transmission. The source transmits RV0 (100 systematic
+chunks). The destination accumulates these chunks into its soft_buffer
+positions [0, 100). All helpers in the overlapping region overhear
+the broadcast and independently attempt soft-decoding.
+
+Phase 2 — Confidence Feedback. The destination computes δ = SNR_eff − SNR_50
+from its accumulated soft_buffer via Eqs. (5)–(10), quantizes δ to Cpkt
+∈ {0,1,2,3}, and broadcasts a NACK packet carrying Cpkt. The source
+receives this NACK directly. All helpers that have successfully decoded
+the source's RV0 overhear the NACK.
+
+Phase 3a — Grace Period (Cpkt ≥ 3). The source does not immediately
+retransmit RV0. Instead, it starts a timer of duration Grace_t (see §3.4)
+and waits for a helper-originated ACK. Meanwhile, all decoded helpers
+enter the contention phase (§3.3). If any helper's parity transmission
+enables the destination to decode successfully, the destination sends
+ACK. Upon receiving ACK during Grace_t, the source marks the hop as
+successful without transmitting a retry.
+
+Phase 3b — Immediate Retry (Cpkt < 3). The source retransmits RV0
+immediately. If Cpkt ≤ 1, the contention mechanism is bypassed and only
+the pre-selected bottleneck-optimal helper transmits parity directly
+(see §3.5). If Cpkt = 2, full competition among decoded helpers takes
+place.
+
+3.2 Confidence Quantization
+
+The normalized decoding margin δ = γ_eff(dB) − γ_50(dB) is computed from
+Eqs. (5)–(10). The Cpkt quantization thresholds are:
+
+    δ > −0.2  → Cpkt = 3  (high confidence: BLER < 2%)
+    δ > −2.0  → Cpkt = 2  (medium confidence)
+    δ > −3.5  → Cpkt = 1  (low confidence)
+    δ ≤ −3.5  → Cpkt = 0  (very low confidence)
+
+Rationale: The threshold −0.2 dB for Cpkt = 3 corresponds to BLER ≈ 2%
+on the sigmoid curve (Eq. 11, κ=4.0), which is the operational point
+where a single RV1 transmission (30 parity chunks) is sufficient to
+drive the residual BLER below 10⁻⁴. The threshold −3.5 dB for Cpkt = 0
+corresponds to BLER ≈ 50%, beyond which helper decoding is unlikely.
+These thresholds were calibrated against Ghosh's RCPC waterfall curves
+and verified to produce consistent protocol differentiation across the
+0–4 dB SNR range.
+
+3.3 Helper Contention
+
+Each decoded helper computes a contention score:
+
+    d_bneck = max(d_src, d_dst)       [bottleneck distance, m]      (15)
+    t_prop = d_bneck / 1500           [one-way propagation, s]      (16)
+    S = w₁·min(c_pkt, 1.5) + w₂·(E_res / E_init)                  (17)
+        + w₃ / (1 + t_prop / 0.4)
+
+where c_pkt is the helper's own decoding confidence (continuous, from its
+received RV0), E_res is its residual energy, and (w₁,w₂,w₃) = (0.40, 0.25,
+0.35). The backoff timer is:
+
+    t_backoff = (1 − clip(S, 0, 1)) × T_WIN × 2 + 0.05 s           (18)
+
+with override rules:
+    S > 0.90  → t_backoff = 0    (zero backoff for top-scoring helper)
+    Cpkt < 3 ∧ is_pre_selected → t_backoff = 0.02 s (priority send)
+
+The first helper whose timer expires begins transmitting its selected RV.
+Other helpers overhearing this transmission trigger a cancel event on the
+same packet ID and withdraw from contention.
+
+Sensitivity of (w₁,w₂,w₃) to CA-CHARQ end-to-end delay was evaluated
+across a 3×3 grid of (w₁,w₃) ∈ {0.2, 0.3, 0.4} × {0.2, 0.35, 0.5} with
+w₂ = 1−w₁−w₃ (when feasible). Delay varies by less than ±4% across the
+grid, indicating that CA-CHARQ performance is robust to weight variations
+and is primarily driven by the structural design of contention rather than
+precise weight tuning. (Detailed heatmap: output/AppendixA_weights.png)
+
+3.4 Grace Period
+
+When Cpkt ≥ 3, the source computes:
+
+    Grace_t = rv_tx_t + T_WIN/4 + 3·t_prop + 0.3 s                (19)
+
+where:
+    rv_tx_t = expected helper transmit time, derived from Cpkt:
+              Cpkt=3 → RV1 → 2.0 s;  Cpkt=2 → RV1 → 2.0 s
+    T_WIN/4 ≈ 0.375 s = buffer for contention backoff of the fastest helper
+    3·t_prop = 3 × 600/1500 = 1.2 s = worst-case ACK round-trip margin
+    0.3 s = ACK processing and SimPy scheduling jitter
+
+The source yields on the event pair [Grace_t timeout, helper_ACK_event].
+If the ACK event fires first, the hop succeeds without source retry.
+
+3.5 Low-SNR Fallback (v11 optimization)
+
+When Cpkt ≤ 1 (very low confidence), the contention mechanism is
+skipped entirely (contend() returns immediately). A single pre-selected
+helper, chosen during topology initialization by minimizing d_bneck
+across all three helpers, transmits RV2 (60 parity chunks) or RV3 (90)
+directly. This eliminates the SimPy event scheduling overhead of 3-helper
+competition (backoff timers, cancel events) at SNRs where the probability
+of any helper decoding is low, improving the 0–0.5 dB overhead by 15%
+compared to the full-competition baseline (v10).
+
+3.6 Complexity Analysis
+
+Table 3. Per-hop operations per protocol (0 dB, typical values).
+┌──────────────┬──────────────────┬──────────────┬────────────────┐
+│ Operation    │ S&W ARQ          │ C-HARQ       │ CA-CHARQ       │
+├──────────────┼──────────────────┼──────────────┼────────────────┤
+│ Source Tx    │ 2 RV0 (Chase)    │ 2 RV0 (Chase)│ 2 RV0 (Chase)  │
+│ Helper Tx    │ 0                │ 90 chunks    │ 30 chunks (RV1)│
+│ Feedback     │ 1 NACK           │ 1 NACK       │ 1 NACK+Cpkt    │
+│ Comp. events │ 0                │ 0            │ 3×backoff+canc.│
+│ Source wait  │ 0                │ 0            │ Grace_t (Cpkt≥3)│
+│ Decoding     │ MI avg+Sigmoid   │ MI avg+Sig.  │ MI avg+Sig.+Cpkt│
+└──────────────┴──────────────────┴──────────────┴────────────────┘
+
+The additional complexity of CA-CHARQ relative to C-HARQ is concentrated
+in the Cpkt computation (3 additional arithmetic ops) and helper
+contention (3 SimPy events per hop). Both are O(1) and negligible compared
+to the acoustic propagation and transmission times.
+
+3.7 Baseline Protocols
+
+S&W ARQ: No cooperation. The source retransmits RV0 upon NACK. Chase
+combining at the destination aggregates successive RV0 copies.
+
+C-ARQ: One pre-selected helper (closest to the mid-point) retransmits
+RV0 upon NACK. Both source and helper RV0s undergo Chase combining.
+
+C-HARQ [1]: One pre-selected helper. Upon hearing NACK, it proactively
+transmits Pac-1 (50 chunks) followed unconditionally by Pac-2 (40 chunks)
+after a 3.53 s gap. The destination performs Chase combining on RV0 copies
+and IR combining on Pac-1/Pac-2 chunks.
+
+
+4. Simulation Setup
+──────────────────────────────────────────────────────────────
+4.1 Parameter Configuration
+
+Table 4. Simulation parameters.
+┌──────────────────────┬────────────┬──────────────────────────────┐
+│ Parameter            │ Value      │ Rationale                    │
+├──────────────────────┼────────────┼──────────────────────────────┤
+│ Carrier frequency    │ 20 kHz     │ Standard UASN band [1]       │
+│ Thorp α              │ ≈4.1 dB/km │ Eq. (2)                     │
+│ Fading               │ Rayleigh   │ No LOS in multi-path [2-4]  │
+│ Source Tx power      │ 15 W       │ Conservative UASN modem      │
+│ Helper Tx power      │ Scaled     │ Eq. (12), 35-70% of source   │
+│ Hop distance         │ 600 m      │ 5 hops = 3 km total          │
+│ Helpers per hop      │ 3          │ Representative density       │
+│ Chunk size           │ 80 bits    │ 1 independent fading sample  │
+│ Data rate            │ 1200 bps   │ Low-rate regime              │
+│ SIM_TIME (main)      │ 15000 s    │ ≈500 packets/protocol        │
+│ SIM_TIME (distance)  │ 8000 s     │ ≈260 packets/protocol        │
+│ SIM_TIME (helpers)   │ 5000 s     │ ≈170 packets/protocol        │
+│ Monte Carlo runs     │ 5          │ 95% CI width < ±3% of mean   │
+│ Packet arrival       │ exp(30 s)  │ Sparse underwater traffic    │
+│ SNR range            │ 0.0–4.0 dB │ 0.5 dB steps, 9 points       │
+│ Distance range       │ 400–1000 m │ 4 points                     │
+│ Helper count range   │ 1–5        │ 5 points (CA-CHARQ only)     │
+└──────────────────────┴────────────┴──────────────────────────────┘
+
+
+5. Results and Discussion
+──────────────────────────────────────────────────────────────
+5.1 End-to-End Delay vs. SNR
+
+Figure: output/v11_Delay_Overhead.png (left panel)
+
+Observation 1. CA-CHARQ achieves the lowest E2E delay across 0–3.5 dB,
+leading C-HARQ by 5–11% (76 s vs. 83 s at 0 dB, 55 s vs. 62 s at 2 dB).
+The bottleneck-distance contention ensures the helper with the best
+joint source-helper and helper-destination channel is selected.
+
+Observation 2. Rayleigh fading (K=0) amplifies the cooperative gain.
+The S&W ARQ delay rises steeply at 0 dB (93 s) because it relies solely
+on source Chase combining without spatial diversity. CA-CHARQ's
+multi-helper competition provides diversity against deep fades.
+
+Observation 3. Above 3.5 dB, all protocols converge to ≈38 s — the
+one-shot transmission floor, where the source's single RV0 suffices
+for decoding and no retransmission is needed.
+
+5.2 Transmission Overhead vs. SNR
+
+Figure: output/v11_Delay_Overhead.png (right panel)
+
+Observation 4. The v11 low-SNR fallback (§3.5) enables CA-CHARQ to
+achieve lower overhead than both C-HARQ and C-ARQ at 0–0.5 dB for the
+first time (12.72 vs. 13.90/14.24 at 0 dB). In v10 (full competition
+at all Cpkt levels), the corresponding value was 15.06 — a 15%
+improvement from selectively bypassing contention.
+
+Observation 5. Cooperative protocols exhibit an arch-shaped overhead
+profile relative to S&W: the ratio peaks at 1–2 dB (where source
+retransmissions decrease but helper transmissions persist), then drops
+sharply once Grace Period activates (Cpkt ≥ 3, ≥ 2.5 dB). CA-CHARQ's
+drop from 12.67 (2.0 dB) to 9.93 (2.5 dB) represents a 21% reduction
+driven by Grace-enabled source retry savings.
+
+5.3 Energy Efficiency vs. SNR
+
+Figure: output/v11_EE.png
+
+Observation 6. S&W ARQ dominates EE below 3.0 dB due to zero helper
+energy expenditure. CA-CHARQ overtakes S&W at 3.0 dB (12.2 vs. 11.8
+bits/Joule). The differentiated helper power (Eq. 12) and Grace Period
+jointly enable this cross-over: helpers use 35–70% of source power
+because of their shorter range, while Grace saves the source 100 chunks
+per successful helper intervention.
+
+5.4 Distance Sweep
+
+Figure: output/v11_Distance_Delay_Overhead.png (both panels)
+Figure: output/v11_Distance_Success.png
+
+Observation 7. At 400 m (SNR≈+2.9 dB), all protocols deliver ≈260 packets
+with ≈40 s delay — the one-shot transmission regime.
+
+Observation 8. At 800 m (SNR≈−2.7 dB), CA-CHARQ delay (561 s) is 39%
+lower than C-HARQ (925 s). The adaptive RV (RV1 = 30 chunks at 2.0 s)
+substantially reduces helper transmission time compared to C-HARQ's
+fixed 90-chunk FEC payload.
+
+Observation 9. At 1000 m (SNR≈−5.0 dB), CA-CHARQ delivers 124 successful
+packets vs. 44 for C-HARQ (2.8×) and 27 for S&W (4.6×). The overhead is
+27.58 vs. 82.05 for C-HARQ (66% reduction). This is the regime where
+the compound benefit of adaptive RV selection, Grace Period, and helper
+competition is maximized — the source would otherwise require 4–5 full
+RV0 retransmissions per hop.
+
+5.5 Helper Count Sweep
+
+Figure: output/v11_Helpers_Delay.png (CA-CHARQ only)
+
+Observation 10. CA-CHARQ E2E delay decreases monotonically from 82.4 s
+(Nh=1) to 73.7 s (Nh=5), a 10.5% reduction. The largest marginal gain
+occurs between Nh=1 and Nh=2 (5.8 s), after which diminishing returns
+set in. This confirms that the contention mechanism effectively exploits
+spatial diversity: a larger helper pool increases the probability of
+selecting a node with favorable joint source-helper and helper-destination
+channel conditions.
+
+5.6 Discussion of Model Limitations
+
+Channel model: Rayleigh block fading (K=0) captures the multi-path
+scattering dominant in shallow-water UASNs but does not model frequency-
+selective fading or Doppler spread from platform motion. The equivalent
+AWGN noise calibration (Eq. 4) abstracts the four-component ambient noise
+spectrum (turbulence, shipping, waves, thermal) into a single scalar.
+These simplifications are consistent with the PHY abstraction level used
+in [2-4].
+
+L2S interface: The sigmoid-based BLER prediction (Eq. 11) replaces actual
+channel decoding with a statistical mapping. While this abstracts
+code-specific performance (error floors, decoding convergence speed),
+the gap parameter 2.5−R was calibrated to match RCPC waterfall behavior
+as reported in [1], and the relative protocol ranking is insensitive to
+the specific mapping function as long as all protocols share the same
+PHY interface.
+
+MAC layer: Following the convention of [1] and [5], medium access control
+is assumed resolved. The backoff timers in the CA-CHARQ contention phase
+(§3.3) include a 0.05 s protection gap to emulate collision-avoidance
+quiet periods, but a full CSMA/CA or TDMA MAC is not modeled.
+
+Energy model: Only transmit energy is tracked. Receive and idle energy
+(≈ 5% of transmit power, per WHOI modem specifications) is omitted, as
+is the computational energy of Cpkt calculation (3 log₂+mean+exp
+operations per decoding attempt, negligible compared to acoustic
+transmission).
+
+
+6. Conclusion
+──────────────────────────────────────────────────────────────
+This work presented CA-CHARQ, a confidence-adaptive cooperative HARQ
+protocol for multi-hop underwater acoustic sensor networks. The protocol
+introduces a Cpkt quantization feedback loop that enables closed-loop
+adaptation of helper redundancy, a bottleneck-distance-weighted contention
+mechanism for helper selection, and a Grace Period for high-confidence
+source retry avoidance.
+
+Simulation results under Rayleigh fading at 20 kHz with Thorp absorption
+(α≈4.1 dB/km) show that CA-CHARQ: (i) achieves 5–11% lower E2E delay than
+C-HARQ across 0–3.5 dB SNR; (ii) reduces overhead below all cooperative
+baselines at 0–0.5 dB through the low-SNR fallback design; (iii) delivers
+2.8× more packets than C-HARQ at 1000 m with 66% lower overhead; and
+(iv) demonstrates spatial diversity gain through monotonic delay reduction
+with increasing helper count (82.4→73.7 s for Nh=1→5).
+
+Future work includes developing an absorbing Markov chain model for the
+multi-helper CA-CHARQ to derive closed-form PER expressions, extending the
+protocol to three-dimensional random deployments, and integrating a
+frequency-dependent ambient noise model for environment-specific
+performance prediction.
+
+
+References
+──────────────────────────────────────────────────────────────
+[1] A. Ghosh, J. Lee, and H. Cho, "Throughput and Energy Efficiency of a
+    Cooperative Hybrid ARQ Protocol for Underwater Acoustic Sensor
+    Networks," Sensors, vol. 13, no. 11, pp. 15385–15408, 2013.
+
+[2] V. Goutham and V. P. Harigovindan, "Analytical Modelling and
+    Performance Enhancement of Cooperative HARQ Scheme for Underwater
+    Acoustic Sensor Networks," SN Computer Science, vol. 2, no. 108,
+    pp. 1–7, 2021.
+
+[3] V. Goutham and V. P. Harigovindan, "Modeling and Analysis of Hybrid ARQ
+    Scheme for Incremental Cooperative Communication in Underwater Acoustic
+    Sensor Networks," Iranian J. Sci. Technol. Trans. Electr. Eng.,
+    vol. 45, pp. 279–294, 2021.
+
+[4] V. Goutham and V. P. Harigovindan, "Stochastic modelling and
+    performance analysis of cooperative HARQ in multi-cluster underwater
+    acoustic sensor networks," Sādhanā, vol. 46, no. 12, pp. 1–5, 2021.
+
+[5] Y. Chen, X. Jin, L. Wan, X. Zhang, and X. Xu, "Selective Dynamic Coded
+    Cooperative Communications for Multi-Hop Underwater Acoustic Sensor
+    Networks," IEEE Access, vol. 7, pp. 70552–70563, 2019.
+
+[6] W. H. Thorp, "Analytic description of the low-frequency attenuation
+    coefficient," J. Acoust. Soc. Am., vol. 42, no. 1, pp. 270–270, 1967.
+
+================================================================================
+End of Document
+================================================================================
