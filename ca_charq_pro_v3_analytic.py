@@ -73,26 +73,11 @@ MOTHER_N_SYM    = 255                              # GF(2^8) mother code
 MOTHER_BITS     = MOTHER_N_SYM * RS_BITS_PER_SYM   # max codeword bits (not used)
 # For practical IR amounts we define RV parity in *transmitted bit* multiples
 # RV0 : 1st 63 RS symbols (system + 6 parity) — the Goutham base block
-# RV extra RS symbols:  5-level adaptive (v4)
-#   RV1(6), RV1.5(9), RV2(12), RV2.5(15), RV3(18) — step = 3 RS parity symbols
-RV_EXTRA_RS_SYMS  = {1: 6, 1.5: 9, 2: 12, 2.5: 15, 3: 18}
-RV_EXTRA_BITS     = {k: int(v * RS_BITS_PER_SYM) for k, v in RV_EXTRA_RS_SYMS.items()}
-
-# 4×3 RV decision matrix:  rows = Cpkt(0-3),  cols = Link(Good=0 / Med=1 / Poor=2)
-# Design: good link → less parity (more efficient); poor link → more parity (needed)
-RV_MATRIX = {
-    3: {0: 1.5, 1: 1.5, 2: 2   },  # Cpkt=3: good/med→RV1.5(9), poor→RV2(12)
-    2: {0: 3,   1: 3,   2: 3   },  # Cpkt=2: all→RV3(18), competition overhead→max parity
-    1: {0: 3,   1: 3,   2: 3   },  # Cpkt=1: all→RV3(18), still needs full help
-    0: {0: 3,   1: 3,   2: 3   },  # Cpkt=0: all→RV3(18), max parity always needed
-}
-
-def link_level_from_gamma(gamma_hd_lin):
-    ser_hd = average_qpsk_ser_rayleigh(gamma_hd_lin)
-    Q = 1.0 - ser_hd
-    if Q > 0.85:   return 0   # Good  (very high SNR)
-    elif Q > 0.5:  return 1   # Medium
-    else:          return 2   # Poor   (low SNR)
+# RV1 : next 6 RS symbols
+# RV2 : next 12 RS symbols
+# RV3 : next 18 RS symbols
+RV_EXTRA_RS_SYMS  = {1: 6, 2: 12, 3: 18}   # extra RS symbols per RV level
+RV_EXTRA_BITS     = {k: v * RS_BITS_PER_SYM for k, v in RV_EXTRA_RS_SYMS.items()}
 
 
 # ==========================================================================
@@ -344,29 +329,25 @@ def per_rs_expected_two_path(k, gamma_sd_lin, gamma_hd_lin,
 
 def compute_cpkt(per_target):
     """
-    Derive Cpkt from PER after estimation. (legacy — superseded by compute_cpkt_rs)
-    """
-    if per_target < 0.02:    return 3
-    elif per_target < 0.20:  return 2
-    elif per_target < 0.70:  return 1
-    else:                    return 0
+    Derive Cpkt ∈ {0,1,2,3} from targeted PER after first RV0 reception.
+    The target PER here comes from the RS formula evaluated at the effective
+    (possibly Chase-combined) SNR.
 
-
-def compute_cpkt_rs(ser_rs_vec, t_base=RS_T_BASE):
+    Thresholds are mapped from BLER → SNR-margin  (as in CA-CHARQ summary §3.2),
+    but here translated to PER space for RS code:
+      Cpkt=3  : PER < 0.02   → destination almost decoded
+      Cpkt=2  : PER < 0.20
+      Cpkt=1  : PER < 0.70
+      Cpkt=0  : otherwise
     """
-    RS algebraic margin Cpkt (v4+).
-    η = E[errors] / t_base = N × avg_RS_SER / t
-    Maps directly to the RS decoder's error-correction requirement.
-    ser_rs_vec: per-RS-symbol error probabilities (length N_sym).
-    """
-    if len(ser_rs_vec) == 0:
+    if per_target < 0.02:
+        return 3
+    elif per_target < 0.20:
+        return 2
+    elif per_target < 0.70:
+        return 1
+    else:
         return 0
-    avg_ser = float(np.mean(ser_rs_vec))
-    eta = len(ser_rs_vec) * avg_ser / t_base
-    if eta < 0.5:    return 3   # 期望错误 < 1.5, 轻帮助可恢复
-    elif eta < 1.5:  return 2   # 期望错误 ≈ 3, 基础t可能够
-    elif eta < 3.0:  return 1   # 期望错误 ≈ 6-9, 需要C-HARQ级帮助
-    else:            return 0   # 期望错误 > 9, 需要最大帮助
 
 
 def per_after_extra_parity(ser_sys, ser_par, n_extra_rs_sym, n_merge_sys=1):
@@ -463,19 +444,17 @@ def charq_hop(snr_db, max_retries=MAX_RETRIES):
 #   CA-CHARQ  (adaptive RS FEC, Grace Period, Cpkt-driven)
 # ------------------------------------------------------------
 def cacharq_hop(snr_db, max_retries=MAX_RETRIES):
-    """CA-CHARQ v4: Cpkt + helper→dest link quality → RV via 4×3 matrix."""
+    """CA-CHARQ with integration-based 2-path PER, Cpkt-driven RV selection."""
     gs = _gamma_sd_lin(snr_db);  gh = _gamma_hd_lin(snr_db)
 
-    # Cpkt from RS algebraic margin (η = E[errors]/t_base) at k=2 Chase
-    # Sample RS SERs from Gamma(2, γ_sd) — 2-round Chase on source path
-    ser_rs_vec = np.zeros(RS_N_SYM)
-    for i in range(RS_N_SYM):
-        gamma = max(np.random.gamma(2, gs), 1e-20)
-        ser_rs_vec[i] = _qpsk_to_rs_ser(qpsk_ser_instant(float(gamma)))
-    cpkt = compute_cpkt_rs(ser_rs_vec)
-    link_lvl = link_level_from_gamma(gh)  # Good=0 / Medium=1 / Poor=2
-    n_x = RV_EXTRA_RS_SYMS[RV_MATRIX[cpkt][link_lvl]]
-    t_eff = RS_T_BASE + int(n_x) // 2
+    # Initial Cpkt (integration-based, single-round source PER)
+    per1 = per_rs_expected_one_path(1, gs, n_sym=RS_N_SYM, t_error=RS_T_BASE)
+    cpkt = compute_cpkt(per1)
+
+    # RV selection
+    RV_EXTRA = {1: 6, 2: 12, 3: 18}
+    n_x = RV_EXTRA.get({0:3, 1:2, 2:1, 3:1}[cpkt], 6)
+    t_eff = RS_T_BASE + n_x // 2
 
     def pk(k):
         return per_rs_expected_two_path(k, gs, gh, RS_N_SYM, n_x, t_eff)
@@ -659,7 +638,7 @@ if __name__ == "__main__":
     # ======== Initial wide scan ========
     print("\n>>> Full-range scan ...")
     r_wide = run_analytic_sweep(SNR_WIDE, PROTOCOLS)
-    plot_results(SNR_WIDE, r_wide, suffix="v4_full", out_dir="output/pro-v4")
+    plot_results(SNR_WIDE, r_wide, suffix="v3_full", out_dir="output/pro-v3")
 
     # Print summary table
     print(f"\n{'SNR':>6s} |", end="")

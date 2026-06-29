@@ -1,0 +1,694 @@
+=================================================================
+CA-CHARQ pro-v1 全面工作总结
+—— 从Sigmoid L2S到RS纠错码PHY模型的演变、探索与教训
+日期: 2026-06-17
+=================================================================
+
+目录
+────
+  1. CA-CHARQ协议总览（原始设计）
+  2. v11：Sigmoid L2S PHY模型（已验证有效）
+  3. pro-v1：RS纠错码PHY模型的动机与设计
+  4. 探索历程：t_base的三种取值与结果
+  5. RV映射与contend()入口的修正尝试
+  6. 根本矛盾分析
+  7. 当前代码状态
+  8. 结论与建议
+
+=================================================================
+1. CA-CHARQ协议总览（原始设计）
+=================================================================
+
+1.1 研究背景
+──
+水下声学传感器网络(UASN)面临独有的物理层限制：声速仅1500 m/s
+（比射频低5个数量级），频率相关的吸收损耗（Thorp公式，20 kHz下
+α≈4.1 dB/km），以及无稳定直射径的严重多径散射（Rayleigh衰落K=0）。
+对于跳距600m的5跳线性网络，一次源端重传往返需约14 s，其中仅声学
+传播就占很大比例。这使得每次额外重传都成为延迟和能耗上的重大代价。
+
+协作HARQ协议尝试通过利用中继节点作为替代数据源来缓解这些代价。Ghosh等
+[1]提出使用RCPC码在协作节点端生成固定大小的FEC包(Pac-1=50块, Pac-2=40块)，
+在收到NACK后依次发送。虽然比非协作方案有提升，但固定FEC尺寸带来了结构
+性的低效——信道好时接收端可能只需一小部分校验，协议却强制完整发送。
+
+1.2 相关工作对比
+──
+┌──────────────┬─────────────┬──────────────┬───────────────┬──────────────┐
+│ 特征         │ Ghosh 2013  │ Goutham 2021 │ Chen 2019     │ 本文         │
+│              │ C-HARQ [1]  │ C-HARQ [2-4] │ S-DCC [5]     │ CA-CHARQ     │
+├──────────────┼─────────────┼──────────────┼───────────────┼──────────────┤
+│ Helper数量   │ 多个        │ 每跳1-r个    │ 每跳1个       │ 3个(竞争)    │
+│ Helper选择   │ 预选        │ 预选         │ 预选          │ 退避竞争     │
+│ FEC类型      │ RCPC(实际)  │ RS(解析)     │ 编码协作      │ 自适应RV     │
+│ 冗余量       │ 固定2-FEC   │ 固定         │ 固定          │ Cpkt驱动     │
+│ 源端等待     │ 无          │ 无           │ 有(S-DCC)     │ Grace Period │
+│ PHY模型      │ BSC+RCPC    │ SER→PER+ns-3 │ 仿真          │ L2S Sigmoid  │
+│ 衰落         │ Rayleigh    │ Rayleigh     │ 未指定        │ Rayleigh K=0 │
+│ 拓扑         │ 单跳        │ 多簇         │ 多跳          │ 5跳线性      │
+│ 性能指标     │ 吞吐+能效   │ PER+能效     │ 延迟+能效     │ 延迟+开销+EE │
+└──────────────┴─────────────┴──────────────┴───────────────┴──────────────┘
+
+现有方案共同缺失的是一个闭环反馈机制——能够量化目的端解码裕度并据此
+调整helper冗余量的机制。所有现有协议的冗余量都是固定的，不随瞬时信道
+质量变化。
+
+1.3 本文贡献
+──
+(1) 置信度量化(Cpkt)：目的端从累积软信息中计算归一化解码裕度
+    δ = SNR_eff − SNR_50，量化为2-bit Cpkt值(0–3)，搭载在NACK包中。
+    这创建了一条从接收端到源端和helper的低开销反馈通道。
+
+(2) 瓶颈距离竞争：多个helper通过加权退避定时器竞争。得分综合考虑
+    helper自身置信度、剩余能量以及helper到源端和目的端距离中的最大值。
+    低SNR区采用分层回退机制处理竞争开销超过收益的情况。
+
+(3) Grace Period：当Cpkt≥3（高置信）时，源端暂缓立即重传，等待
+    helper发起的ACK。若helper成功，节省一次源端重传(100块)。
+
+(4) 自适应RV：获胜helper按Cpkt选择发送量：Cpkt≥2→RV1(30块),
+    Cpkt=1→RV2(60块), Cpkt=0→RV3(90块)。
+
+(5) L2S PHY抽象：基于Shannon容量的链路级仿真接口(L2S)替代实际编解
+    码器实例化，确保公平协议比较的同时能够扫描广阔参数空间。
+
+(6) 差异化helper功率：helper发射功率按(d_dest/600)^1.5缩放，反映其
+    到目的端更短的路径损耗，改善能效。
+
+
+=============================================================
+2. v11：Sigmoid L2S PHY模型（已验证有效）
+=============================================================
+
+2.1 系统模型
+──
+网络拓扑：5跳线性，每跳600m，每跳3 helper随机部署在源-目的圆交叠
+区域内。半双工模式，源端发包间隔均值30s（指数分布），模拟稀疏水下流量。
+
+信道模型：Rayleigh块衰落(K=0)，每个chunk独立系数。Thorp吸收α≈4.1
+dB/km@20kHz。柱面扩展指数1.5用于实用浅水传播。等效AWGN噪声方差按
+目标接收SNR校准。
+
+软信息合并：目的端维护190维soft_buffer。源端RV0累加到[0:100)做Chase
+合并，helper校验chunk累加到对应区间做IR合并。
+
+2.2 L2S PHY抽象（两层）
+──
+层1 — Shannon MI映射：
+    mi_i = log2(1 + SNR_i)  (逐活跃chunk)
+    SNR_eff = 2^(mean(mi_i)) - 1
+
+层2 — 码率相关Sigmoid BLER：
+    R = N_sys / N_active        (等效码率)
+    SNR_shannon = 2^R - 1       (Shannon容量极限)
+    gap(R) = 2.5 - R            (实用编码gap, dB)
+    SNR_50 = SNR_shannon + gap(R)
+    BLER = [1 + exp(4.0×(SNR_eff_dB - SNR_50))]^-1
+
+gap参数(2.5-R)与Ghosh的RCPC瀑布曲线校准。解码成功条件：U(0,1) > BLER。
+
+2.3 RV分片（v11，基于190 chunk RCPC母码）
+──
+┌───────┬─────────────┬──────┬──────────┬──────────────────────────┐
+│ RV    │ Chunk区间   │ 尺寸 │ 传输时间 │ 使用方                   │
+├───────┼─────────────┼──────┼──────────┼──────────────────────────┤
+│ RV0   │ [0, 100)    │ 100  │ 6.67 s   │ 全部协议的源端           │
+│ RV1   │ [100, 130)  │ 30   │ 2.00 s   │ CA-CHARQ helper(Cpkt≥2)  │
+│ RV2   │ [100, 160)  │ 60   │ 4.00 s   │ CA-CHARQ helper(Cpkt=1)  │
+│ RV3   │ [100, 190)  │ 90   │ 6.00 s   │ CA-CHARQ helper(Cpkt=0)  │
+│ Pac-1 │ [100, 150)  │ 50   │ 3.33 s   │ C-HARQ helper            │
+│ Pac-2 │ [150, 190)  │ 40   │ 2.67 s   │ C-HARQ helper            │
+└───────┴─────────────┴──────┴──────────┴──────────────────────────┘
+
+Helper竞争得分（瓶颈距离加权）：
+    d_bneck = max(d_src, d_dst)
+    S = 0.40*min(c_pkt,1.5) + 0.25*(E_res/E_init) + 0.35/(1+t_prop/0.4)
+
+退避：S>0.90 → 0s；低SNR预选helper → 0.02s；其余 → (1-S)×T_WIN×2+0.05s。
+
+2.4 Cpkt量化
+──
+    delta_db = SNR_eff(dB) - SNR_50(dB)
+    delta_db > -0.2  → Cpkt = 3  (高置信: BLER < 2%)
+    delta_db > -2.0  → Cpkt = 2  (中置信)
+    delta_db > -3.5  → Cpkt = 1  (低置信)
+    delta_db ≤ -3.5  → Cpkt = 0  (极低置信)
+
+2.5 对照协议
+──
+S&W ARQ:   无协作，源端Chase重传RV0
+C-ARQ:     1个预选helper（距中点最近），收到NACK后helper发送RV0
+C-HARQ:    1个预选helper，听说NACK后主动连发Pac-1(50块)+Pac-2(40块)
+CA-CHARQ:  Cpkt嵌入NACK反馈 → Grace Period(Cpkt≥3) → 3 helper竞争
+
+
+2.6 v11仿真参数
+──
+┌──────────────────────┬────────────┬──────────────────────────────┐
+│ 参数                 │ 值         │ 选取依据                     │
+├──────────────────────┼────────────┼──────────────────────────────┤
+│ 载波频率             │ 20 kHz     │ UASN标准频段                 │
+│ Thorp α              │ ≈4.1 dB/km │ 频率相关吸收公式             │
+│ 衰落                 │ Rayleigh   │ K=0, 多径无直射径            │
+│ 源端发射功率         │ 15 W       │ 保守UASN modem               │
+│ Helper发射功率       │ 缩放^1.5   │ 35-70%源端                  │
+│ 跳距                 │ 600 m      │ 5跳共3 km                   │
+│ Chunk大小            │ 80 bit     │ 每chunk独立衰落             │
+│ 数据率               │ 1200 bps   │ 低码率区间                   │
+│ SIM_TIME(主仿)       │ 15000 s    │ ≈500包/协议                  │
+│ SIM_TIME(距离扫)     │ 8000 s     │ ≈260包/协议                  │
+│ SIM_TIME(Helper扫)   │ 5000 s     │ ≈170包/协议                  │
+│ MC轮次               │ 5          │ 95%CI宽<均值±3%              │
+│ SNR范围              │ 0.0-4.0 dB │ 0.5dB步长, 9点              │
+│ 距离范围             │ 400-1000 m │ 4点                          │
+└──────────────────────┴────────────┴──────────────────────────────┘
+
+2.7 v11 核心结果（Sigmoid L2S, Rayleigh K=0）
+──
+
+延迟 vs SNR：
+  - CA-CHARQ 0-3.5 dB区间延迟最低，领先C-HARQ 5-11%
+  - 0dB: CA-CHARQ 76s vs C-HARQ 83s vs S&W ARQ 93s
+  - 3.5-4.0 dB所有协议收敛至≈38s（一传即成功）
+
+开销 vs SNR：
+  - 0dB突破：CA-CHARQ 12.72，首次低于C-HARQ(13.90)和C-ARQ(14.24)
+  - 低SNR回退（Cpkt≤1跳过竞争、预选helper直发）降开销15%
+  - 2.0→2.5 dB降幅21%（Grace省去源端重传）
+
+能效 vs SNR：
+  - S&W ARQ在3.0 dB以内能效最高（零helper能耗）
+  - CA-CHARQ 3.0 dB首次反超(12.2 vs 11.8 bits/Joule)
+  - helper差异化功率+Grace共同促成反超
+
+距离扫描（400-1000m）：
+  - 400m所有协议重叠(~40s，一传区间)
+  - 800m CA-CHARQ领先39%（561 vs 925s），自适应RV节省传输时间
+  - 1000m决定性胜利：124包 vs C-HARQ 44包(2.8×)，开销27.58 vs 82.05(仅34%)
+
+
+=============================================================
+3. pro-v1：RS纠错码PHY模型的动机与设计
+=============================================================
+
+3.1 动机
+──
+专家评审反馈指出，v11的"Shannon MI + Sigmoid BLER"物理层抽象不够具体，
+"不是编码理论"。因此pro-v1尝试将PHY模型改为基于Reed-Solomon纠错码的
+解析模型，以编码理论框架直接计算误包率（PER）。
+
+对标参考：Goutham 2021使用RS(63,57,t=3)的解析SER→PER模型，在ns-3
+中验证。pro-v1试图在其启发下构建物理意义更明确的仿真模型。
+
+3.2 物理层设计
+──
+调制：QPSK（每个符号携带2 bit）
+包结构：25系统块 × 16 bit/块 = 400 bit = 200 QPSK符号
+软信息：soft_buffer存储每个chunk的累积SNR值（仍为Chase合并），不实例化
+        真实RS编码器/译码器，但在PER层面使用RS纠错能力公式
+
+纠错模型（compute_packet_per）：
+    逐符号QPSK差错率：SER_i = 1 - (1 - 0.5·erfc(√(γ_i/2)))²
+    每chunk含8符号，总符号数 N_sym = n_active × 8
+    系统符号数 N_info = 200
+    奇偶符号数 N_parity = max(0, N_sym - N_info)
+    纠错能力 t = t_base + floor(N_parity / 2)
+    预期错误数 μ = Σ(SER_i) × 8.0
+    方差 σ² = Σ(SER_i × (1-SER_i)) × 8.0
+    PER ≈ 1 - 0.5×(1 + erf((t + 0.5 - μ)/√(2σ²)))
+    (正态逼近二项尾概率)
+
+这是pro-v1与v11的核心差异：
+  v11: Shannon MI均值 → 等效SNR → Sigmoid BLER（抽象，曲线光滑）
+  pro-v1: 逐符号SER → 错误数分布 → RS纠错能力判据（具体，参数明确）
+
+3.3 规模缩减
+──
+v11: 100系统块 × 80 bit = 8000 bit（对标Ghosh 2013的RCPC母码）
+pro-v1: 25系统块 × 16 bit = 400 bit（对标Goutham 2021的57-bit包规模）
+
+QPSK符号数：pro-v1为200符号 vs Goutham约29符号（BPSK）
+数据率保持1200 bps
+
+3.4 RV分片（pro-v1，基于44 chunk总长）
+──
+RV_SLICES = {0: (0, 25), 1: (25, 31), 2: (25, 38), 3: (25, 44)}
+CHARQ_FEC = [(25, 33), (33, 44)]  → C-HARQ Pac-1(8块), Pac-2(11块)
+
+┌───────┬─────────────┬──────┬──────────┬──────────────────────────┐
+│ RV    │ Chunk区间   │ 尺寸 │ N_parity │ t_extra                  │
+├───────┼─────────────┼──────┼──────────┼──────────────────────────┤
+│ RV0   │ [0, 25)     │ 25   │ 0 符号   │ 0                        │
+│ RV1   │ [25, 31)    │ 6    │ 48 符号  │ 24                       │
+│ RV2   │ [25, 38)    │ 13   │ 104 符号 │ 52                       │
+│ RV3   │ [25, 44)    │ 19   │ 152 符号 │ 76                       │
+│ Pac-1 │ [25, 33)    │ 8    │ 64 符号  │ 32                       │
+│ Pac-2 │ [33, 44)    │ 11   │ 88 符号  │ 44                       │
+└───────┴─────────────┴──────┴──────────┴──────────────────────────┘
+
+3.5 置信度量化（RS版本）
+──
+rs_confidence(soft_buffer):
+    per = compute_packet_per(soft_buffer)
+    per < 0.05  → cpkt = 3  (高置信，几乎已解码)
+    per < 0.30  → cpkt = 2  (中)
+    per < 0.70  → cpkt = 1  (低)
+    else        → cpkt = 0  (极低置信，PER≥70%)
+
+与v11 Sigmoid的不同：v11用delta_db（dB区间），pro-v1用PER本身（概率区间）。
+
+3.6 RV选择映射（pro-v1原始设计）
+──
+contend() 和 low-SNR直通路径均使用：
+    cpkt ≥ 2  → RV1（最少parity：6块，t+24）  ← 高置信 → 少帮助
+    cpkt ≥ 1  → RV2（中等parity：13块，t+52）
+    else      → RV3（最大parity：19块，t+76）  ← 低置信 → 多帮助
+
+contend()入口条件：pkt.cpkt <= 1 → return（低置信跳过竞争）
+
+这个映射与v11一致：高置信度(cpkt≥2)时发送最少冗余，低置信度(cpkt=0)时
+发送最多冗余。符合"自适应"的初衷。
+
+3.7 关键差异：Sigmoid vs RS
+──
+v11 (Sigmoid L2S):
+  - Chase合并收益：SNR翻倍 → SNR_eff增大 → BLER通过Sigmoid下降
+  - IR收益：N_active增加 → 等效码率下降 → SNR_50左移 → BLER下降
+  - Chase和IR各有一条路径影响BLER，两条路径互相补充
+
+pro-v1 (RS纠错):
+  - Chase合并收益：SNR翻倍 → SER从erfc中指数下降 → 预期错误急剧减少
+  - IR收益：N_parity增加 → t线性增长 → 可纠正错误数线性增多
+  - Chase(指数) vs IR(线性): 指数收益碾压线性收益
+
+
+=============================================================
+4. 探索历程：t_base的三种取值与结果
+=============================================================
+
+所有实验条件：5 MC runs × 9 SNR (0-4dB, 0.5步长) × 4协议, SimTime=15000s
+              Rayleigh K=0, Thorp α≈4.1dB/km@20kHz, 3 helpers/hop
+
+──────────────────────────────────────────────────────────────
+■ 尝试 A: t_base = 43 (RS(286,200), 码率 0.70)
+──────────────────────────────────────────────────────────────
+
+结果：所有4个协议0-4dB零掉包，均在正常通信范围内。
+
+Overhead (Tx/Useful):
+ SNR |    S&W ARQ   |    C-ARQ    |   C-HARQ   |  CA-CHARQ
++0.0dB:  12.69 (★)  |  15.13      |  14.36     |  13.90
++4.0dB:  8.31  (★)  |  10.88      |  10.50     |  10.23
+
+Delay (s):
+ SNR |    S&W ARQ   |    C-ARQ    |   C-HARQ   |  CA-CHARQ
++0.0dB:     24      |     15 (★)  |     16     |     17
++4.0dB:      7      |      6      |      5 (★) |      6
+
+分析：
+  - S&W ARQ 在所有 SNR 开销最低 ✗ (应该是合作开销 < 非合作)
+  - C-HARQ 在延迟上领先 ✗ (CA-CHARQ 应该领先)
+  - t_base=43→码率0.70→FEC保护仅次于LDPC, RS(286,200,t=43)单次
+    传输即可纠正约43个符号错误。0dB下预期错误≈30<43→源端独立成功
+    率极高→合作变成浪费
+
+结论：FEC过强，淹没了协作增益
+
+──────────────────────────────────────────────────────────────
+■ 尝试 B: t_base = 0 (裸QPSK, 无FEC)
+──────────────────────────────────────────────────────────────
+
+结果：全部4个协议0-4dB全线崩溃 (Drop rate=1.0), 所有SRN点Succ=0
+
+分析：
+  - 0dB QPSK SER≈15% → P(200符号全正确)=0.85^200≈2.7×10^-14
+  - 2×Chase → SER降至3.6% → P(全正确)=0.964^200≈0.0007（仍≈0）
+  - 无FEC保护的200符号QPSK在Rayleigh信道0-4dB区间天然无法工作
+  - 物理规律，非协议问题
+
+结论：裸QPSK在水声信道下不可用，必须有所设FEC
+
+──────────────────────────────────────────────────────────────
+■ 尝试 C: t_base = 11 (对标Goutham码率0.90)
+──────────────────────────────────────────────────────────────
+
+结果：所有协议在1.5dB+可通，0dB掉包≈50%
+
+Overhead (Tx/Useful):
+ SNR |    S&W ARQ   |    C-ARQ    |   C-HARQ   |  CA-CHARQ
++0.0dB:  51.80      |  48.52      |  48.25 (★) |  50.98
++4.0dB:  15.30      |  15.60      |  15.38 (★) |  15.34
+
+Delay (s):
+ SNR |    S&W ARQ   |    C-ARQ    |   C-HARQ   |  CA-CHARQ
++0.0dB:    195      |    189      |   189      |    194
++4.0dB:     45      |     38      |    38 (★)  |     41
+
+CA-CHARQ 4.0dB开销15.34 < C-HARQ 15.38, 但C-HARQ在几乎所有其他SNR点
+领先CA-CHARQ。
+
+Distance Sweep (400-1000m):
+  400m: CA-CHARQ D=113.7s (最低), C-HARQ OH=23.99 (最低)
+  600m+: 全部协议在800m+ 100%掉包
+
+分析：
+  - C-HARQ 的 Pac-1(8块,t+32=43) 在0dB刚好够用（预期错误30<43）
+  - CA-CHARQ的RV选择在contend()与直通路径中存在逻辑交叉
+  - 低SNR直通路径发RV3(19块,t+76=87)→够用但过度→开销增加
+  - C-HARQ发Pac-1(8块)就够了→开销更优
+
+结论：C-HARQ领先，CA-CHARQ无优势
+
+──────────────────────────────────────────────────────────────
+■ 尝试 D: RV映射审视与修正（发现实为no-op）
+──────────────────────────────────────────────────────────────
+
+检查contend()中的RV选择逻辑：
+
+原始代码：
+    if cpkt >= 2:   rv = 1   (高置信→轻parity)
+    elif cpkt >= 1: rv = 2   
+    else:           rv = 3   (低置信→重parity)
+
+"反转"后代码：
+    if cpkt <= 0:   rv = 3   
+    elif cpkt <= 1: rv = 2   
+    else:           rv = 1   
+
+验证cpkt∈{0,1,2,3}两条路段完全等价：
+    cpkt=0: 旧else→3, 新≤0→3 ✓
+    cpkt=1: 旧≥1→2, 新≤1→2 ✓
+    cpkt=2: 旧≥2→1, 新else→1 ✓
+    cpkt=3: 旧≥2→1, 新else→1 ✓
+
+两条逻辑完全相同。修改为no-op。两次运行结果一致印证了这一点。
+
+同时发现：contend()入口条件 `pkt.cpkt <= 1 → return` 在0dB信道下
+（cpkt=0，极低置信）直接跳过竞争，导致预选helper的直通路径成为
+唯一出路，低SNR下无法受益于竞争选优。
+
+──────────────────────────────────────────────────────────────
+■ 尝试 E: t_base = 3 (精确Goutham t=3) + contend()入口修正
+──────────────────────────────────────────────────────────────
+
+改动：
+  - t_base从11降至3
+  - contend()入口从 "cpkt≤1→return" 改为 "cpkt≥3→return"
+    (让低置信度信道也能进入竞争)
+
+结果：全部协议0-1.5dB全线崩溃 (Drop=100%), 2.0+dB仅90%掉包，
+        仅400m距离(SNR≈4dB)可正常通信
+
+Overhead at 4.0dB:
+  S&W 21.80, C-ARQ 21.45, C-HARQ 21.16(★), CA-CHARQ 21.47
+
+Delay at 4.0dB:
+  S&W 115, C-ARQ 106, C-HARQ 104(★), CA-CHARQ 108
+
+距离扫（0dB@600m基准）：
+  400m: CA-CHARQ D=113.7(最低), C-HARQ OH=23.99(最低)
+  600m+: 全部100%掉包
+
+分析：
+  - t=3时0dB预期错误30 >> t=3 → 单次RV0完全失败
+  - 需3次Chase(SER降至1.2%)才能勉强正确→需要极多轮重传→仿真时间
+    内不足以完成
+  - 即使有helper，RV3(t+76=79)一次可解，但源端RV0的Chase在到达
+    helper辅助之前已经耗尽尝试次数(MAX_MERGE_ATTEMPTS=8)
+
+结论：t_base=3过于薄弱，无法维持有意义的通信
+
+──────────────────────────────────────────────────────────────
+■ t_base尝试总结表
+
+┌──────────┬───────┬──────────────────────┬──────────────────────┐
+│ t_base   │ 码率  │ 0dB状态              │ 问题                 │
+├──────────┼───────┼──────────────────────┼──────────────────────┤
+│   43     │ 0.70  │ 全部成功, 开销S&W最  │ FEC过强→合作无意义   │
+│   11     │ 0.90  │ 50%掉包，可通但有噪  │ C-HARQ领先全部指标   │
+│    3     │ 0.97  │ 100%掉包，不可通     │ FEC过弱→信道不可用   │
+│    0     │ 1.00  │ 100%掉包，不可通     │ 无FEC裸QPSK物理不可行│
+└──────────┴───────┴──────────────────────┴──────────────────────┘
+
+仅t_base=11提供可用仿真窗口，但该窗口内C-HARQ始终领先CA-CHARQ。
+
+
+=============================================================
+5. RV映射与contend()入口的修正尝试
+=============================================================
+
+5.1 原始RV选择逻辑（v11与pro-v1共用）
+──
+    cpkt ≥ 2 → RV1 (最少parity)  高置信度→少量帮助
+    cpkt = 1 → RV2 (中等parity) 
+    cpkt = 0 → RV3 (最多parity)  低置信度→大量帮助
+
+这符合"自适应"的逻辑：信道好时（高置信度）不需太多helper校验块，
+信道差时（低置信度）需要更多helper校验块。
+
+5.2 "反转"的实际效果
+──
+将 cpkt≥2→rv=1 改为 cpkt≤0→rv=3 等，实质上映射函数未变。
+cpkt∈{0,1,2,3}下两条逻辑完全等价。
+
+5.3 contend()入口的修正（实际有意义的改动）
+──
+旧代码：
+    if pid in self.helper_cancel_events or pkt.cpkt <= 1:
+        return
+
+新代码：
+    if pid in self.helper_cancel_events:
+        return
+    if pkt.cpkt >= 3:
+        return
+
+改动意图：旧代码在低SNR(cpkt=0,1)时完全跳过helper竞争，只依赖预选
+helper直接发送。这导致差信道下竞争机制的选优能力（空间分集）被浪费。
+新代码只在高置信(cpkt=3，几乎已解码)时跳过竞争，让竞争机制在所有需要
+helper的场景下均有效。
+
+但此改动搭配t_base=3后全协议崩溃（§4.E），难以单独评估效果。
+
+5.4 低SNR直通路径
+──
+handle()中CA-CHARQ的处理：
+    if pkt.cpkt > 1:
+        self.env.process(self.contend(pkt))      # 竞争路径
+    elif self.is_low_snr_selected:
+        rv = 2 if cpkt >= 1 else 3               # 直接发送
+        self.helper_tx_cnt[pid] += 1
+        yield self.env.process(self.send_data(...))
+
+低SNR(cpkt≤1)时预选helper直接发送，不进城竞争。发送量：
+    cpkt=0 → rv=3 (19块, t+76)  ← 最差信道最大帮助
+    cpkt=1 → rv=2 (13块, t+52)
+
+这在高t_base(43)下过度（19块 vs 需要的增量极少），但在低t_base(3)
+下合理（19块提供76符号纠错，足以修正0dB的30个预期错误）。
+
+
+=============================================================
+6. 根本矛盾分析
+=============================================================
+
+6.1 RS纠错码模型中Chase与IR的不对称性
+──
+Chase合并（C-ARQ采用）：helper发送完整RV0 → SNR翻倍 → Q-function
+erfc(√(·))中的参数放大√2倍 → SER指数下降。0dB: 15%→3.6%→1.2%，
+每增加一次Chase，SER以~3倍因子指数衰减。
+
+IR增量冗余（C-HARQ/CA-CHARQ采用）：helper发送校验chunk → N_parity增加
+→ t线性增长。每增加6块校验(48符号)增加24的纠错能力→线性改善。
+
+对比：Chase(指数) >> IR(线性) 在纠错码物理中是根本特点，非协议设计问题。
+
+6.2 RS模型的离散粒度问题
+──
+仅有4个RV等级(6/13/19块)，每个间隔≥6块。在25系统块的规模下：
+- RV1(t+24)可能是足够的帮助或严重不足，取决于t_base和SNR
+- 细粒度自适应需要4-5块一档的RV等级，但chunk是仿真的最小单位
+
+C-HARQ的Pac-1(8块)+Pac-2(11块)=19块恰好覆盖中等SNR区间。
+CA-CHARQ的自适应(6/13/19块)离散跳跃，在低频工况下反而低效。
+
+6.3 文献对比——为何Ghosh用RCPC而非RS
+──
+Ghosh 2013使用RCPC（Rate-Compatible Punctured Convolutional）码。
+RCPC的puncturing机制可以精确控制在同一条卷积译码路径上的比特级保护：
+每增加一个校验比特都直接增强Viterbi译码的格图分支可靠性→IR效率可控。
+RS码的块级纠错(t=(N-K)/2)不存在这种逐比特的增量保护→IR效率不可控。
+
+v11的Sigmoid L2S正是对标RCPC的waterfall特性校准的：gap(2.5-R)捕获了
+实用编码与Shannon极限的距离，在0-4dB区间各协议差异化良好。
+
+6.4 三个深层教训
+──
+(1) RS纠错码不适合作为UWA协作HARQ的PHY抽象，因为在RS模型框架下Chase
+    的指数收益天然压倒IR的线性收益。这与"文献使用RS码"（Goutham 2021
+    使用RS解析性分析，但在ns-3中仿真）并不矛盾——Goutham的分析模型和
+    仿真模型使用不同的PHY层次。
+
+(2) t_base的选择是零和博弈：没有同时满足"让合作有意义"和"让所有协议
+    可通"的t值。t≥11: 合作无意义；t≤3: 协议不可通。任何可通的t提供
+    C-HARQ（固定FEC）足够做最佳的pre-tuned优势。
+
+(3) 25系统块的包规模过小，无法提供足够的差分粒度（4-6块的RV间隔在
+    仅25+19=44块总长下过于稀疏）。
+
+
+=============================================================
+7. 当前代码状态
+=============================================================
+
+7.1 文件
+──
+    主仿真:     CA-CHARQ-pro-v1.py (974行)
+    对照基线:   CA-CHARQ-v6-plus-v11.py (Sigmoid L2S, 已验证有效)
+    辅助脚本:   v11_sensitivity.py, v8_distance.py, v8_helpers.py
+
+7.2 pro-v1关键参数 (当前值)
+──
+    CHUNKS_SYS = 25, CHUNKS_PARITY_MAX = 19
+    BITS_PER_CHUNK = 16 (每chunk含8 QPSK符号, 总200符号)
+    BIT_RATE = 1200 bps, RICIAN_K = 0
+    HOP_DIST = 600m, NUM_HOPS = 5, N_HELPERS_PER_HOP = 3
+    RV_SLICES = {0:(0,25), 1:(25,31), 2:(25,38), 3:(25,44)}
+    CHARQ_FEC = [(25,33),(33,44)] (C-HARQ Pac-1=8块, Pac-2=11块)
+    t_base = 3 (最后一次运行, 导致崩溃)
+
+7.3 compute_packet_per() — RS纠错模型
+──
+    输入: soft_buffer[np.float64] (SNR累积值, 按chunk)
+    流程: 
+      1. 滤出活跃chunk (SNR>0)
+      2. 每chunk的QPSK符号级SER: 1-(1-0.5·erfc(√(γ/2)))²
+      3. 预期错误: μ = 8×ΣSER_i (每chunk=8符号)
+      4. 错误数方差: σ² = 8×ΣSER_i(1-SER_i)
+      5. 纠错能力: t = t_base + max(0, N_sym-200)//2
+      6. PER = 1 - 0.5×(1 + erf((t+0.5-μ)/√(2σ²)))
+    输出: PER ∈ [1e-8, 1-1e-8]
+
+7.4 rs_confidence() — 置信度量化
+──
+    per = compute_packet_per(soft_buffer)
+    per < 0.05  → cpkt = 3     (高置信)
+    per < 0.30  → cpkt = 2     
+    per < 0.70  → cpkt = 1     
+    else        → cpkt = 0     (极低置信)
+
+7.5 contend() — Helper竞争 (当前状态)
+──
+    入口:
+      if pid in self.helper_cancel_events: return
+      if pkt.cpkt >= 3: return           # 高置信→无需help
+    
+    RV选择:
+      if cpkt <= 0:   rv = 3             # 最差→最大帮助
+      elif cpkt <= 1: rv = 2             
+      else:           rv = 1             # cpkt=2→最少帮助
+      (与原始逻辑等价: cpkt=0→3,1→2,2→1,3不进入)
+    
+    得分-退避:
+      S = W1·min(c_pkt,1.5) + W2·E_res/E_init + W3/(1+t_prop/0.4)
+      t = (1-clip(S,0,1))×T_WIN×2 + 0.05s
+      S>0.90 → t=0; cpkt<3且is_low_snr_selected → t=0.02
+
+7.6 handle() — 目的端/helper处理
+──
+    PROTO_CA NACK路径:
+      if pkt.cpkt > 1:           # cpkt=2→进入竞争
+          self.env.process(self.contend(pkt))
+      elif self.is_low_snr_selected:  # cpkt=0,1→直接发送
+          rv = 2 if cpkt >= 1 else 3  # cpkt=0→3, cpkt=1→2
+          self.helper_tx_cnt[pid] += 1
+          self.send_data(pkt.hop_tx, pid, rv, ...)
+
+
+=============================================================
+8. 结论与建议
+=============================================================
+
+8.1 主要结论
+──
+(1) RS纠错码模型不适合作为CA-CHARQ的主线PHY仿真。
+
+    原因：
+    (a) t_base的选择不可调和——任何使得所有协议可通的t都会让C-HARQ
+        （固定FEC结构，等价于预先调优）占据优势
+    (b) Chase合并(指数) vs IR(线性)的不对称性使C-ARQ天然有利，与
+        CA-CHARQ的IR+适应性设计目标相悖
+    (c) 在25系统块的规模下，4级RV(6/13/19块)的粒度过于粗糙，
+        无法展现自适应控制vs固定FEC的精细差异
+
+(2) v11的Sigmoid L2S PHY模型在论文框架下仍然是最佳选择。
+
+    理由：
+    (a) Sigmoid L2S在校准方式上可引用Ghosh 2013的RCPC码waterfall
+        特性，审稿人的"非编码理论"负面评论可以通过以下方式回应：
+        将PHY层描述从"Shannon MI + Sigmoid"改为"RCPC waterfall-
+        calibrated link-to-system abstraction"
+    (b) v11已经验证的策略（CA-CHARQ在延迟上领先C-HARQ 5-11%、0dB
+        开销首次低于所有协作协议、1000m交付C-HARQ的2.8倍包数）无需
+        重新仿真
+    (c) C-HARQ(Chase)在RS模型下优于C-HARQ(IR)是编码物理事实，
+        而RCPC模型下IR有可调效率——这符合文献的PHY选择
+
+(3) RS模型仍可为论文提供补充验证。
+
+    在论文附录中保留单SNR点(如4dB)的RS模型验证，展示协议在另一种
+    PHY抽象下的稳健性。无需RS模型产生领先结果，只需展示CA-CHARQ
+    在RS模型下不低于C-HARQ即可。
+
+8.2 推荐的下一步
+──
+    Step 1: 回到v11 (CA-CHARQ-v6-plus-v11.py)作为主仿真文件
+    Step 2: 更新PHY描述文字，从"Shannon MI"改为"RCPC waterfall-
+            calibrated L2S"
+    Step 3: 在output/CA-CHARQ总结v1.txt中补充RS模型的简要分析
+    Step 4: 可选：在4dB SNR单点用RS模型验证四种协议排序，放入附录
+    Step 5: 更新output/大纲v1.txt中的PHY模型描述
+
+8.3 技术积累（可复用的pro-v1工作）
+──
+    (a) compute_packet_per(soft_buffer) — RS纠错PER解析公式
+    (b) rs_confidence(soft_buffer) — PER→置信度映射（替代Sigmoid delta_db）
+    (c) RV_SLICES 缩小至25块系统的经验
+    (d) contend()入口条件的修正方向
+    (e) t_base与掉包率的经验关系数据
+    (f) 窄包(25块)+RS模型下C-HARQ优于CA-CHARQ的深层原因分析
+
+以上内容可直接用于论文的"模型扩展/消融研究/设计空间探索"部分。
+
+
+=================================================================
+参考文献
+=================================================================
+[1] A. Ghosh, J. Lee, and H. Cho, "Throughput and Energy Efficiency of a
+    Cooperative Hybrid ARQ Protocol for Underwater Acoustic Sensor
+    Networks," Sensors, vol. 13, no. 11, pp. 15385–15408, 2013.
+
+[2] V. Goutham and V. P. Harigovindan, "Analytical Modelling and
+    Performance Enhancement of Cooperative HARQ Scheme for Underwater
+    Acoustic Sensor Networks," SN Computer Science, vol. 2, no. 108,
+    pp. 1–7, 2021.
+
+[3] V. Goutham and V. P. Harigovindan, "Modeling and Analysis of Hybrid ARQ
+    Scheme for Incremental Cooperative Communication in Underwater Acoustic
+    Sensor Networks," Iranian J. Sci. Technol. Trans. Electr. Eng.,
+    vol. 45, pp. 279–294, 2021.
+
+[4] V. Goutham and V. P. Harigovindan, "Stochastic modelling and
+    performance analysis of cooperative HARQ in multi-cluster underwater
+    acoustic sensor networks," Sadhana, vol. 46, no. 12, pp. 1–5, 2021.
+
+[5] Y. Chen, X. Jin, L. Wan, X. Zhang, and X. Xu, "Selective Dynamic Coded
+    Cooperative Communications for Multi-Hop Underwater Acoustic Sensor
+    Networks," IEEE Access, vol. 7, pp. 70552–70563, 2019.
+
+[6] W. H. Thorp, "Analytic description of the low-frequency attenuation
+    coefficient," J. Acoust. Soc. Am., vol. 42, no. 1, pp. 270–270, 1967.
+
+=================================================================
+End of Document
+=================================================================

@@ -39,9 +39,8 @@ RV_SLICES = {0: (0, 100), 1: (100, 130), 2: (100, 160), 3: (100, 190)}
 CHARQ_FEC = [(100, 150), (150, 190)]
 CHARQ_FEC_SIZE = [50, 40]
 
-CA_HELPER_SKIP_RATIO = 0.50
+CA_HELPER_SKIP_RATIO = 0.85
 CARQ_SKIP_RATIO      = 0.30
-HELPER_MIN_MI        = 6000.0   # v10: helpers 解码概率>60% 时才激活 Grace
 
 PROTO_SW_ARQ = "S&W ARQ"
 PROTO_CARQ   = "CARQ"
@@ -261,23 +260,7 @@ class UnderwaterNode:
                         hop_ok = True
                         break
                     elif msg['type'] == 'NACK':
-                        skip_h = msg.get('skip_helper', False)
-                        # v9: CA-CHARQ 自适应 Grace Period
-                        if self.protocol == PROTO_CA and not skip_h:
-                            rv_req = msg.get('req_rv', 0)
-                            rv_chunks = RV_SLICES[rv_req][1] - RV_SLICES[rv_req][0]
-                            grace_t = (T_MAX_WINDOW * 1.5
-                                       + rv_chunks * BITS_PER_CHUNK / BIT_RATE
-                                       + 3 * HOP_DIST / SOUND_SPEED + 1.2)
-                            grace = self.env.timeout(grace_t)
-                            ack_grace = simpy.Event(self.env)
-                            gkey = f"{pid}_grace"
-                            self.ack_events[gkey] = ack_grace
-                            gr = yield ack_grace | grace
-                            self.ack_events.pop(gkey, None)
-                            if ack_grace in gr:
-                                hop_ok = True
-                                break
+                        # v10: 源端收到 NACK 直接重传 RV0, helper 竞争提供 IR
                         yield self.env.process(self.send_data(
                             self.next_hop_id, pid, 0, creation_time))
                 else:
@@ -456,7 +439,7 @@ class UnderwaterNode:
                 # ---- CA-CHARQ: 广播 NACK + RTS 竞争 ----
                 elif self.protocol == PROTO_CA:
                     c, rv = confidence_quantize(acc_mi)
-                    skip_h = (ratio > CA_HELPER_SKIP_RATIO) or (acc_mi < HELPER_MIN_MI)
+                    skip_h = (ratio > CA_HELPER_SKIP_RATIO)
                     yield self.env.process(self.send_nack(
                         self.hop_source.get(pid, pkt.hop_tx),
                         pid, rv, c, skip_helper=skip_h))
@@ -855,17 +838,17 @@ def mc_run(snr_db, protocol, sim_time, n_runs, k=2.0):
 # 11. 主程序
 # ==========================================
 if __name__ == "__main__":
-    K_FACTORS = [('K2_Rician', 2.0), ('K0_Rayleigh', 0.0)]
+    K_FACTORS = [('K2_Rician', 2.0)]
 
     for k_label, k_val in K_FACTORS:
         print(f"\n{'='*65}")
-        print(f" CA-CHARQ v10 — {k_label} — SINR碰撞 + RTS + Grace + MIN_MI门限")
-        print(f" SNR: -5~15dB | TARGET_MI={TARGET_MI} | skip_CA={CA_HELPER_SKIP_RATIO} skip_CARQ={CARQ_SKIP_RATIO} MIN_MI={HELPER_MIN_MI}")
+        print(f" CA-CHARQ v10 — {k_label} — SINR碰撞 + RTS + Grace(ca=0.85,carq=0.30)")
+        print(f" SNR: -5~5dB (0.5dB) | TARGET_MI={TARGET_MI} | N_RUNS=3 | SIM=5000s")
         print(f"{'='*65}")
 
-        SNR_LIST   = [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15]
-        SIM_TIME   = 8000
-        N_RUNS     = 3 if k_val == 0.0 else 5
+        SNR_LIST   = list(np.arange(-5.0, 5.5, 0.5))
+        SIM_TIME   = 5000
+        N_RUNS     = 3
 
         PROTOCOLS = []
         if ENABLE['SW_ARQ']: PROTOCOLS.append(PROTO_SW_ARQ)
@@ -894,7 +877,7 @@ if __name__ == "__main__":
                 results[proto]['ee'][1].append(r['ee_ci95'])
                 results[proto]['drop_rate'][0].append(r['drop_rate_mean'])
                 results[proto]['drop_rate'][1].append(r['drop_rate_ci95'])
-                print(f"  SNR={snr:+4d}dB | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.0f}s | "
+                print(f"  SNR={snr:+5.1f}dB | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.0f}s | "
                       f"Ov={r['overhead_mean']:6.2f}x | "
                       f"EE={r['ee_mean']:8.1f} | "
                       f"Drop={r['drop_rate_mean']:.2f} | "
@@ -975,7 +958,7 @@ if __name__ == "__main__":
                 v = results[proto]['delay'][0][i]
                 parts.append(f"{v:10.0f}s" if not np.isnan(v) else "       n/a")
             row = " | ".join(f"{p:>15s}" for p in parts)
-            print(f"{s:+4d}dB | {row}")
+            print(f"{s:+5.1f}dB | {row}")
 
         print(f"\n{'='*65}")
         print(f"v10 Overhead Summary ({k_label})")
@@ -985,7 +968,7 @@ if __name__ == "__main__":
                 v = results[proto]['overhead'][0][i]
                 parts.append(f"{v:8.2f}x" if not np.isnan(v) else "    n/a")
             row = " | ".join(f"{p:>15s}" for p in parts)
-            print(f"{s:+4d}dB | {row}")
+            print(f"{s:+5.1f}dB | {row}")
 
         print(f"\n{'='*65}")
         print(f"v10 EE Summary ({k_label})")
@@ -995,7 +978,27 @@ if __name__ == "__main__":
                 v = results[proto]['ee'][0][i]
                 parts.append(f"{v:8.1f}" if not np.isnan(v) else "    n/a")
             row = " | ".join(f"{p:>15s}" for p in parts)
-            print(f"{s:+4d}dB | {row}")
+            print(f"{s:+5.1f}dB | {row}")
+
+        # v10: 输出 txt 文件
+        txt_out = f"v10_results_{k_label}.txt"
+        with open(txt_out, 'w', encoding='utf-8') as f:
+            f.write(f"CA-CHARQ v10 Results — {k_label}\n")
+            f.write(f"TARGET_MI={TARGET_MI}  skip_CA={CA_HELPER_SKIP_RATIO}  skip_CARQ={CARQ_SKIP_RATIO}\n")
+            f.write(f"SIM={SIM_TIME}s  N_RUNS={N_RUNS}  SNR={min(SNR_LIST):.1f}~{max(SNR_LIST):.1f}dB\n\n")
+            for table_name, key in [("Delay (s)", "delay"), ("Overhead (x)", "overhead"), ("Energy Efficiency (bits/J)", "ee")]:
+                f.write(f"{'='*75}\n{table_name}\n{'='*75}\n")
+                hdr = f"{'SNR':>6s} |" + "|".join(f" {p:>15s} " for p in PROTOCOLS)
+                f.write(hdr + "\n" + "-" * 75 + "\n")
+                for i, s in enumerate(SNR_LIST):
+                    parts = []
+                    for proto in PROTOCOLS:
+                        v = results[proto][key][0][i]
+                        parts.append(f"{v:10.2f}" if not np.isnan(v) else "       n/a")
+                    row = " | ".join(f"{p:>15s}" for p in parts)
+                    f.write(f"{s:+5.1f}dB | {row}\n")
+                f.write("\n")
+        print(f"[OK] {txt_out}")
 
     print("\n" + "=" * 65)
     print(" CA-CHARQ v10 Done.")

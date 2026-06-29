@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 
 # Import PHY functions from analytic model
-from ca_charq_pro_v4_analytic import (
+from ca_charq_pro_v2_analytic import (
     SOUND_SPEED, BIT_RATE, TX_POWER_W, FREQ_KHZ, HOP_DIST,
     NUM_HOPS, N_HELPERS, MAX_RETRIES,
     RS_N_SYM, RS_K_SYM, RS_T_BASE, RS_BITS_PER_SYM, RS_TOTAL_BITS,
@@ -27,8 +27,8 @@ from ca_charq_pro_v4_analytic import (
     thorp_alpha, transmission_loss,
     snr_linear_tx_power, noise_var_for_target_snr_db,
     qpsk_ser_instant, average_qpsk_ser_rayleigh, ser_post_chase,
-    rs_decoded_ser, per_rs, per_rs_gaussian, per_rs_expected_one_path, compute_cpkt, compute_cpkt_rs, _qpsk_to_rs_ser,
-    RV_MATRIX, RV_EXTRA_RS_SYMS, link_level_from_gamma,
+    rs_decoded_ser, per_rs, per_rs_vec, compute_cpkt, _qpsk_to_rs_ser,
+    per_rs_rs_ser,
 )
 
 PROTO_SW_ARQ = "S&W ARQ"
@@ -44,40 +44,11 @@ T_MAX_WINDOW    = 1.5
 T_PROTECTION_GAP = 0.05
 INITIAL_ENERGY = 10000.0
 
-# 5-level RV (v4): RV1(6), RV1.5(9), RV2(12), RV2.5(15), RV3(18)
-RV_EXTRA = {1: 6, 1.5: 9, 2: 12, 2.5: 15, 3: 18}
-
 # C-HARQ fixed FEC
-CHARQ_FEC_EXTRA = 12
+CHARQ_FEC_EXTRA = 12    # Pac-1(6) + Pac-2(6) extra RS symbols
 
-class LinkQualityEstimator:
-    """Helper→dest link quality via Bayesian fusion of RSSI + history."""
-    def __init__(self, w_rssi=5.0, alpha_ewma=0.3):
-        self.q_rssi = 0.5           # EWMA of normalized RSSI
-        self.alpha = alpha_ewma      # EWMA smoothing
-        self.hist_succ = 0           # successful cooperations (heard ACK)
-        self.hist_total = 0          # total cooperation attempts
-        self.w_rssi = w_rssi
-
-    def update_rssi(self, snr_lin):
-        q = min(1.0, snr_lin / 10.0)  # normalize: SNR≈10 → Q≈1 (more sensitive)
-        self.q_rssi = self.alpha * q + (1.0 - self.alpha) * self.q_rssi
-
-    def update_result(self, success: bool):
-        self.hist_total += 1
-        if success:
-            self.hist_succ += 1
-
-    def q_link(self):
-        q_hist = self.hist_succ / max(self.hist_total, 1)
-        n = self.hist_total
-        return (n * q_hist + self.w_rssi * self.q_rssi) / (n + self.w_rssi)
-
-    def level(self):
-        q = self.q_link()
-        if q > 0.85:   return 0   # Good
-        elif q > 0.5:  return 1   # Medium
-        else:          return 2   # Poor
+# CA-CHARQ RV mapping
+RV_EXTRA = {1: 6, 2: 12, 3: 18}   # extra RS symbols per RV level
 
 # Max QPSK-level parity positions (18 RS symbols × 3 QPSK/RS)
 MAX_PARITY_QPSK = 18 * (RS_BITS_PER_SYM // MOD_BITS)  # = 54
@@ -187,7 +158,6 @@ class UnderwaterNode:
         self.is_low_snr_selected   = False  # CA-CHARQ bottleneck-best for low SNR
         self.helper_cancel_events  = {}    # pid → simpy.Event for competition cancel
         self.helper_tx_cnt       = defaultdict(int)
-        self.link_quality        = None    # LinkQualityEstimator (CA-CHARQ helpers only)
 
         self.next_hop_id = None
         self.is_dest     = False
@@ -206,9 +176,9 @@ class UnderwaterNode:
             # Send first RV0
             yield self.env.process(self._send_data(self.next_hop_id, pid, 0, creation_time))
             rtt = HOP_DIST / SOUND_SPEED * 2
-            gto = rtt + 1.5
+            gto = rtt + 1.0  # unified for non-CA; CA overrides below
             if self.protocol == PROTO_CA:
-                gto = rtt + 1.5  # same as non-CA; Grace period handles Cpkt≥3
+                gto = rtt + T_MAX_WINDOW * 2 + 2.0
 
             for retry_i in range(MAX_RETRIES):
                 # Check if response already arrived
@@ -332,17 +302,8 @@ class UnderwaterNode:
                     # Send NACK (possibly with Cpkt)
                     if (self.protocol == PROTO_CA
                             and pkt.hop_tx == self.hop_source.get(pid)):
-                        active = buf[buf > 0]
-                        if len(active) > 0:
-                            gamma_est = float(np.mean(active))
-                            rs_ser_est = _qpsk_to_rs_ser(ser_post_chase(gamma_est, 2))
-                            eta = RS_N_SYM * rs_ser_est / RS_T_BASE
-                            if eta < 0.5:     cpkt = 3
-                            elif eta < 1.5:   cpkt = 2
-                            elif eta < 3.0:   cpkt = 1
-                            else:             cpkt = 0
-                        else:
-                            cpkt = 0
+                        per_now = self._compute_per(buf)
+                        cpkt = compute_cpkt(per_now)
                         yield self.env.process(self._send_nack_cpkt(
                             self.hop_source[pid], pid, cpkt))
                     elif pkt.hop_tx == self.hop_source.get(pid) and pid not in self.nack_sent:
@@ -403,24 +364,19 @@ class UnderwaterNode:
             elif self.role == 'HELPER' and self.protocol == PROTO_CA:
                 link_src, link_dst = self.helper_for_link
                 if (pkt.hop_rx, pkt.hop_tx) == (link_src, link_dst):
-                    # Update link quality from destination's NACK RSSI
-                    if self.link_quality and hasattr(pkt, 'received_snr') and len(pkt.received_snr) > 0:
-                        self.link_quality.update_rssi(float(np.mean(pkt.received_snr)))
                     buf = self.soft_buffer.get(pid)
                     if isinstance(buf, dict) and buf.get("status") == "DECODED":
-                        if pkt.cpkt > 2:
-                            # Cpkt=3 → compete for best helper (Grace saves source retx)
+                        if pkt.cpkt > 1:
+                            # Cpkt=2 or Cpkt=3: contend (Cpkt=3 now allowed for Grace!)
                             self.env.process(self.contend(pkt))
-                        elif pkt.cpkt == 2:
-                            # Cpkt=2 → any decoded helper responds immediately (no competition)
-                            link_lvl = self.link_quality.level() if self.link_quality else 0
-                            rv = RV_MATRIX.get(pkt.cpkt, {0:3, 1:3, 2:3}).get(link_lvl, 3)
-                            self.helper_tx_cnt[pid] += 1
-                            yield self.env.process(self._send_data(
-                                pkt.hop_tx, pid, rv, buf["creation_time"]))
                         elif self.is_low_snr_selected and self.helper_tx_cnt[pid] < 3:
-                            link_lvl = self.link_quality.level() if self.link_quality else 0
-                            rv = RV_MATRIX.get(pkt.cpkt, {0:3, 1:2, 2:1, 3:1}).get(link_lvl, 2)
+                            # Low-SNR fallback: direct send
+                            cpkt_v = pkt.cpkt
+                            rv = {0: 3, 1: 2}.get(cpkt_v, 2)
+                            if cpkt_v >= 1:
+                                rv = 2
+                            else:
+                                rv = 3
                             self.helper_tx_cnt[pid] += 1
                             yield self.env.process(self._send_data(
                                 pkt.hop_tx, pid, rv, buf["creation_time"]))
@@ -465,13 +421,6 @@ class UnderwaterNode:
                     hev = self.helper_ack_events[pid]
                     if not hev.triggered:
                         hev.succeed({'type': 'ACK'})
-            # CA-CHARQ helper: track link quality from heard ACK + RSSI
-            if self.role == 'HELPER' and self.protocol == PROTO_CA and self.link_quality:
-                if hasattr(pkt, 'received_snr') and len(pkt.received_snr) > 0:
-                    self.link_quality.update_rssi(float(np.mean(pkt.received_snr)))
-                if self.helper_tx_cnt.get(pid, 0) > 0:
-                    self.link_quality.update_result(True)
-                    self.helper_tx_cnt.pop(pid, None)
 
     # ====================  Helper Contention (CA-CHARQ) ====================
     def contend(self, pkt):
@@ -503,8 +452,10 @@ class UnderwaterNode:
 
         result = yield self.env.timeout(t_backoff) | cancel_ev
         if cancel_ev not in result:
-            link_lvl = self.link_quality.level() if self.link_quality else 0
-            rv = RV_MATRIX.get(pkt.cpkt, {0:3, 1:2, 2:1, 3:1}).get(link_lvl, 2)
+            cpkt_r = pkt.cpkt
+            if cpkt_r <= 0:   rv = 3
+            elif cpkt_r <= 1: rv = 2
+            else:             rv = 1
             self.helper_tx_cnt[pid] += 1
             yield self.env.process(self._send_data(
                 pkt.hop_tx, pid, rv, buf["creation_time"]))
@@ -540,7 +491,7 @@ class UnderwaterNode:
         for i in range(n_rs):
             p = [qpsk_ser_instant(float(active_vals[qpsk_per_rs*i+j])) for j in range(qpsk_per_rs)]
             ser_rs_vec[i] = 1.0 - np.prod([1.0 - pj for pj in p])
-        return per_rs_gaussian(ser_rs_vec, t_eff)
+        return per_rs_rs_ser(float(np.mean(ser_rs_vec)), n_rs_total, t_eff)
 
     def _try_decode(self, pid):
         """Attempt decode: compute PER → random trial."""
@@ -669,8 +620,6 @@ def run_sim(snr_db, protocol, sim_time, seed=0):
                     h = UnderwaterNode(env, base_id + placed,
                                        x, y, 'HELPER', protocol, stats, ch, nv)
                     h.helper_for_link = (i, i + 1)
-                    if protocol == PROTO_CA:
-                        h.link_quality = LinkQualityEstimator()
                     d_dst = math.hypot(x - dx, y)
                     h.tx_power = TX_POWER_W * min(1.0, (d_dst / HOP_DIST) ** 1.5)
                     ch.nodes.append(h)
@@ -750,8 +699,8 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
 # ==========================================
 if __name__ == "__main__":
     SNR_LIST   = [0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0]
-    SIM_TIME   = 8000
-    N_RUNS     = 3
+    SIM_TIME   = 15000
+    N_RUNS     = 5
 
     ENABLE = {PROTO_SW_ARQ: True, PROTO_CARQ: True, PROTO_CHARQ: True, PROTO_CA: True}
     PROTOCOLS = [p for p in [PROTO_SW_ARQ, PROTO_CARQ, PROTO_CHARQ, PROTO_CA] if ENABLE.get(p, True)]
@@ -765,7 +714,7 @@ if __name__ == "__main__":
                for p in PROTOCOLS}
 
     print("=" * 60)
-    print(f"  SimPy Event Simulation v4.0  |  {N_RUNS} MC × {len(SNR_LIST)} SNR × {len(PROTOCOLS)} proto")
+    print(f"  SimPy Event Simulation v2.0  |  {N_RUNS} MC × {len(SNR_LIST)} SNR × {len(PROTOCOLS)} proto")
     print(f"  PHY: RS({RS_N_SYM},{RS_K_SYM},t={RS_T_BASE}) + Sklar 1988")
     print(f"  SimTime: {SIM_TIME}s, max retries: {MAX_RETRIES}")
     print("=" * 60)
@@ -805,13 +754,12 @@ if __name__ == "__main__":
             ax2.plot(np.array(SNR_LIST)[mask], y[mask], MARKERS[proto] + '-',
                      color=COLORS[proto], lw=1.8, ms=7, label=proto,
                      markerfacecolor='white', markeredgecolor=COLORS[proto])
-    ax2.set_xlabel("Per-Hop SNR (dB)");     ax2.set_ylabel("Transmission Overhead (x Useful)")
-    ax2.set_yscale('log')
-    ax2.set_title("Overhead — SimPy v3")
+    ax2.set_xlabel("Per-Hop SNR (dB)"); ax2.set_ylabel("Overhead (x Useful)")
+    ax2.grid(True, ls='-', alpha=0.15, color='gray'); ax2.legend()
 
     plt.tight_layout()
-    plt.savefig("output/pro-v4/simpy_v4_Delay_Overhead.png", dpi=200, bbox_inches='tight')
-    print("\n[OK] output/pro-v4/simpy_v4_Delay_Overhead.png")
+    plt.savefig("output/pro-v2/simpy_v2_Delay_Overhead.png", dpi=200, bbox_inches='tight')
+    print("\n[OK] output/pro-v2/simpy_v2_Delay_Overhead.png")
     plt.close('all')
 
     fig2, ax_ee = plt.subplots(1, 1, figsize=(7, 5))
@@ -825,8 +773,8 @@ if __name__ == "__main__":
     ax_ee.set_xlabel("Per-Hop SNR (dB)"); ax_ee.set_ylabel("Energy Efficiency (bits/J)")
     ax_ee.grid(True, ls='-', alpha=0.15, color='gray'); ax_ee.legend()
     plt.tight_layout()
-    plt.savefig("output/pro-v4/simpy_v4_EE.png", dpi=200, bbox_inches='tight')
-    print("[OK] output/pro-v4/simpy_v4_EE.png")
+    plt.savefig("output/pro-v2/simpy_v2_EE.png", dpi=200, bbox_inches='tight')
+    print("[OK] output/pro-v2/simpy_v2_EE.png")
     plt.close('all')
 
     print("=" * 60)

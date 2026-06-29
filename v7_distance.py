@@ -12,34 +12,23 @@ from collections import defaultdict
 # ==========================================
 SOUND_SPEED  = 1500.0
 BIT_RATE     = 1200.0
-BITS_PER_CHUNK = 16
-CHUNKS_SYS     = 25
-CHUNKS_PARITY_MAX = 19
+BITS_PER_CHUNK = 80
+CHUNKS_SYS     = 100
+CHUNKS_PARITY_MAX = 90
 TX_POWER_W     = 15.0
 MAX_HOP_RETRYS     = 5
 MAX_MERGE_ATTEMPTS = 8
 T_MAX_WINDOW    = 1.5
 T_PROTECTION_GAP = 0.2
 INITIAL_ENERGY = 10000.0
-RICIAN_K = 0.0
+RICIAN_K = 2.0
 HOP_DIST = 600.0
 NUM_HOPS = 5
 N_HELPERS_PER_HOP = 3
-FREQ_KHZ       = 20.0
 
-RV_SLICES = {0: (0, 25), 1: (25, 31), 2: (25, 38), 3: (25, 44)}
-
-def thorp_alpha(f_khz):
-    f = f_khz
-    return 0.11*f*f/(1+f*f) + 44*f*f/(4100+f*f) + 2.75e-4*f*f + 0.003
-
-def compute_tl(d_m, f_khz):
-    spread = (d_m / 1000.0) ** 1.5
-    alpha = thorp_alpha(f_khz)
-    absorb = 10.0 ** (alpha * d_m / 1000.0 / 10.0)
-    return spread * absorb + 1e-20
-CHARQ_FEC = [(25, 33), (33, 44)]
-CHARQ_FEC_SIZE = [8, 11]
+RV_SLICES = {0: (0, 100), 1: (100, 130), 2: (100, 160), 3: (100, 190)}
+CHARQ_FEC = [(100, 150), (150, 190)]
+CHARQ_FEC_SIZE = [50, 40]
 
 PROTO_SW_ARQ = "S&W ARQ"
 PROTO_CARQ   = "C-ARQ"
@@ -56,32 +45,39 @@ ENABLE = {
     'CA':     True,
 }
 
+def miesm_confidence(soft_buffer):
+    active = soft_buffer > 0
+    n_active = int(np.sum(active))
+    if n_active < 100:
+        return -5.0, 0
+    mi_per_chunk = np.log2(1.0 + soft_buffer[active])
+    avg_mi = np.mean(mi_per_chunk)
+    snr_eff_db = 10.0 * math.log10(max(2.0**avg_mi - 1.0, 1e-30))
+    code_rate = 100.0 / n_active
+    snr_shannon_db = 10.0 * math.log10(max(2.0**code_rate - 1.0, 1e-30))
+    gap_db = 2.5 - code_rate
+    snr_50_db = snr_shannon_db + gap_db
+    delta_db = snr_eff_db - snr_50_db
+    if delta_db > -0.2:      cpkt = 3
+    elif delta_db > -2.0:    cpkt = 2
+    elif delta_db > -3.5:    cpkt = 1
+    else:                    cpkt = 0
+    return float(np.clip(delta_db, -5.0, 5.0)), cpkt
+
 def compute_packet_per(soft_buffer):
     active = soft_buffer > 0
     n_active = int(np.sum(active))
-    if n_active < 25:
+    if n_active < 100:
         return 1.0
-    gamma = soft_buffer[active]
-    ser_symbol = 1.0 - (1.0 - 0.5 * np.array([math.erfc(math.sqrt(max(g, 0) / 2.0)) for g in gamma]))**2
-    n_sym = n_active * 8            # 16 bits/chunk = 8 QPSK symbols
-    n_info_sym = 200                # 25 chunks × 8 symbols
-    t_base = 3                      # 对标Goutham 2021 RS(63,57,t=3)的精确纠错能力
-    n_parity_sym = max(0, n_sym - n_info_sym)
-    t_correct = t_base + n_parity_sym // 2
-    expected = np.sum(ser_symbol) * 8.0
-    if expected <= t_correct:
-        return 1e-6
-    var_e = np.sum(ser_symbol * (1.0 - ser_symbol)) * 8.0
-    z = (t_correct + 0.5 - expected) / np.sqrt(max(var_e, 1e-10))
-    per = 1.0 - 0.5 * (1.0 + math.erf(z / np.sqrt(2.0)))
-    return float(np.clip(per, 1e-8, 1.0 - 1e-8))
-
-def rs_confidence(soft_buffer):
-    per = compute_packet_per(soft_buffer)
-    if per < 0.05:    return per, 3
-    elif per < 0.30:  return per, 2
-    elif per < 0.70:  return per, 1
-    else:             return per, 0
+    mi_per_chunk = np.log2(1.0 + soft_buffer[active])
+    avg_mi = np.mean(mi_per_chunk)
+    snr_eff_db = 10.0 * math.log10(max(2.0**avg_mi - 1.0, 1e-30))
+    code_rate = 100.0 / n_active
+    snr_shannon_db = 10.0 * math.log10(max(2.0**code_rate - 1.0, 1e-30))
+    gap_db = 2.5 - code_rate
+    snr_50_db = snr_shannon_db + gap_db
+    bler = 1.0 / (1.0 + math.exp(4.0 * (snr_eff_db - snr_50_db)))
+    return float(np.clip(bler, 1e-8, 1.0 - 1e-8))
 
 # ==========================================
 # 3. 统计中心
@@ -142,14 +138,19 @@ class StatsTracker:
 # 4. 信道模型 (仅 Rician K=2)
 # ==========================================
 def noise_var_for_snr_db(snr_db):
-    loss = compute_tl(HOP_DIST, FREQ_KHZ)
+    dist_km = HOP_DIST / 1000.0
+    spread = dist_km ** 1.5
+    absorb = 10.0 ** (0.04 * dist_km)
+    loss = spread * absorb + 1e-20
     snr_lin = 10.0 ** (snr_db / 10.0)
     return TX_POWER_W / (loss * snr_lin)
 
 
 def avg_snr_db(noise_var, dist_m=None):
-    d_m = dist_m if dist_m else HOP_DIST
-    loss = compute_tl(d_m, FREQ_KHZ)
+    d_km = (dist_m if dist_m else HOP_DIST) / 1000.0
+    spread = d_km ** 1.5
+    absorb = 10.0 ** (0.04 * d_km)
+    loss = spread * absorb + 1e-20
     snr_lin = (TX_POWER_W / loss) / max(noise_var, 1e-30)
     return 10.0 * math.log10(max(snr_lin, 1e-30))
 
@@ -207,7 +208,6 @@ class UnderwaterNode:
         self.noise_variance = noise_variance
         self.inbox = simpy.Store(env); self.tx_queue = simpy.Store(env)
         self.energy = INITIAL_ENERGY
-        self.tx_power = TX_POWER_W
         self.soft_buffer = {}
         self.merge_count = defaultdict(int)
         self.hop_source = {}
@@ -250,7 +250,7 @@ class UnderwaterNode:
                     elif self.protocol == PROTO_CA:
                         cpkt = msg.get('cpkt', 2)
                         if cpkt >= 3:
-                            rv_chunks = {0: 19, 1: 13, 2: 6}.get(cpkt, 6)
+                            rv_chunks = {0: 90, 1: 60, 2: 30}.get(cpkt, 30)
                             rv_tx_t = rv_chunks * BITS_PER_CHUNK / BIT_RATE
                             grace_t = rv_tx_t + T_MAX_WINDOW / 4 + 3 * HOP_DIST / SOUND_SPEED + 0.3
                             grace_to = self.env.timeout(grace_t)
@@ -286,7 +286,7 @@ class UnderwaterNode:
                         if self.protocol == PROTO_CA:
                             cpkt = msg.get('cpkt', 2)
                             if cpkt >= 3:
-                                rv_chunks = {0: 19, 1: 13, 2: 6}.get(cpkt, 6)
+                                rv_chunks = {0: 90, 1: 60, 2: 30}.get(cpkt, 30)
                                 rv_tx_t = rv_chunks * BITS_PER_CHUNK / BIT_RATE
                                 grace_t = rv_tx_t + T_MAX_WINDOW / 4 + 3 * HOP_DIST / SOUND_SPEED + 0.3
                                 grace_to = self.env.timeout(grace_t)
@@ -344,7 +344,7 @@ class UnderwaterNode:
                     s, e = pkt.start_idx, pkt.end_idx
                     self.soft_buffer[pid][s:e] += pkt.received_snr_array
                 else:
-                    self.soft_buffer[pid][0:25] += pkt.received_snr_array
+                    self.soft_buffer[pid][0:100] += pkt.received_snr_array
 
                 per = compute_packet_per(self.soft_buffer[pid])
 
@@ -364,7 +364,7 @@ class UnderwaterNode:
                 else:
                     if (self.protocol == PROTO_CA
                             and pkt.hop_tx == self.hop_source[pid]):
-                        c, cpkt = rs_confidence(self.soft_buffer[pid])
+                        c, cpkt = miesm_confidence(self.soft_buffer[pid])
                         max_n = NACK_MAX if cpkt >= 3 else 1
                         if self.nack_count[pid] < max_n:
                             self.nack_count[pid] += 1
@@ -394,11 +394,11 @@ class UnderwaterNode:
                     self.soft_buffer[pid] = np.zeros(CHUNKS_SYS + CHUNKS_PARITY_MAX)
                 if isinstance(self.soft_buffer[pid], dict):
                     return
-                self.soft_buffer[pid][0:25] += pkt.received_snr_array
+                self.soft_buffer[pid][0:100] += pkt.received_snr_array
                 per = compute_packet_per(self.soft_buffer[pid])
                 if random.random() > per:
                     if self.protocol == PROTO_CA:
-                        c, cpkt = rs_confidence(self.soft_buffer[pid])
+                        c, cpkt = miesm_confidence(self.soft_buffer[pid])
                         self.soft_buffer[pid] = {"status": "DECODED",
                                                  "creation_time": pkt.creation_time,
                                                  "c_pkt": c, "cpkt": cpkt}
@@ -423,14 +423,7 @@ class UnderwaterNode:
                 if (pkt.hop_rx, pkt.hop_tx) == (link_src, link_dst):
                     buf = self.soft_buffer.get(pid)
                     if isinstance(buf, dict) and buf.get("status") == "DECODED":
-                        if pkt.cpkt > 1:
-                            self.env.process(self.contend(pkt))
-                        elif self.is_low_snr_selected and self.helper_tx_cnt[pid] < 3:
-                            cpkt = pkt.cpkt
-                            rv = 2 if cpkt >= 1 else 3
-                            self.helper_tx_cnt[pid] += 1
-                            yield self.env.process(self.send_data(
-                                pkt.hop_tx, pid, rv, buf["creation_time"]))
+                        self.env.process(self.contend(pkt))
 
             elif self.role == 'HELPER' and self.is_selected:
                 link_src, link_dst = self.helper_for_link
@@ -475,8 +468,6 @@ class UnderwaterNode:
         pid = pkt.pid
         if pid in self.helper_cancel_events:
             return
-        if pkt.cpkt >= 3:
-            return
         buf = self.soft_buffer.get(pid)
         if not isinstance(buf, dict) or buf.get("status") != "DECODED":
             return
@@ -503,9 +494,9 @@ class UnderwaterNode:
         result = yield self.env.timeout(t) | cancel_ev
         if cancel_ev not in result:
             cpkt = pkt.cpkt
-            if cpkt <= 0:   rv = 3
-            elif cpkt <= 1: rv = 2
-            else:           rv = 1
+            if cpkt >= 2:   rv = 1
+            elif cpkt >= 1: rv = 2
+            else:           rv = 3
             self.helper_tx_cnt[pid] += 1
             yield self.env.process(self.send_data(
                 pkt.hop_tx, pid, rv, buf["creation_time"]))
@@ -518,8 +509,8 @@ class UnderwaterNode:
         if pkt.pkt_type == PKT_DATA: self.stats.record_data_tx()
         elif pkt.pkt_type == PKT_NACK: self.stats.record_nack_tx()
         elif pkt.pkt_type == PKT_ACK: self.stats.record_ack_tx()
-        self.energy -= self.tx_power * dur
-        self.stats.record_energy(self.tx_power * dur)
+        self.energy -= TX_POWER_W * dur
+        self.stats.record_energy(TX_POWER_W * dur)
         yield self.env.timeout(dur)
         self.network.broadcast(self, pkt)
 
@@ -569,8 +560,11 @@ class Channel:
             clone.cpkt = pkt.cpkt
 
             if pkt.pkt_type == PKT_DATA:
-                loss = compute_tl(dist, FREQ_KHZ)
-                asnr = (sender.tx_power / loss) / self.noise_var
+                dkm = dist / 1000.0
+                spread = dkm ** 1.5
+                absorb = 10.0 ** (0.04 * dkm)
+                loss = spread * absorb + 1e-20
+                asnr = (TX_POWER_W / loss) / self.noise_var
                 n = clone.num_chunks
                 I = self.los + self.nlos * np.random.randn(n)
                 Q = self.nlos * np.random.randn(n)
@@ -587,28 +581,19 @@ class Channel:
 # ==========================================
 # 8. 仿真执行
 # ==========================================
-def run_sim(snr_db, protocol, sim_time, seed=0, hop_dist=None, fixed_noise_var=None, n_helpers=None):
-    if hop_dist is not None:
-        global HOP_DIST
-        saved_dist = HOP_DIST
-        HOP_DIST = hop_dist
-    if n_helpers is not None:
-        global N_HELPERS_PER_HOP
-        saved_helpers = N_HELPERS_PER_HOP
-        N_HELPERS_PER_HOP = n_helpers
+def run_sim(hop_dist, protocol, sim_time, noise_var, seed=0):
+    global HOP_DIST
+    saved_dist = HOP_DIST
+    HOP_DIST = hop_dist
     random.seed(seed); np.random.seed(seed)
     env = simpy.Environment()
     stats = StatsTracker(sim_time)
-    if fixed_noise_var is not None:
-        nv = fixed_noise_var
-    else:
-        nv = noise_var_for_snr_db(snr_db)
-    ch = Channel(env, nv, k=RICIAN_K)
+    ch = Channel(env, noise_var, k=RICIAN_K)
 
     routers = []
     for i in range(NUM_HOPS + 1):
         n = UnderwaterNode(env, i, i * HOP_DIST, 0,
-                           'ROUTER', protocol, stats, ch, nv)
+                           'ROUTER', protocol, stats, ch, noise_var)
         if i < NUM_HOPS:
             n.next_hop_id = i + 1
         if i == NUM_HOPS:
@@ -628,10 +613,8 @@ def run_sim(snr_db, protocol, sim_time, seed=0, hop_dist=None, fixed_noise_var=N
                 y = (random.random() * 2 - 1) * R
                 if math.hypot(x - sx, y) <= R and math.hypot(x - dx, y) <= R:
                     h = UnderwaterNode(env, helper_base_id + placed,
-                                       x, y, 'HELPER', protocol, stats, ch, nv)
+                                       x, y, 'HELPER', protocol, stats, ch, noise_var)
                     h.helper_for_link = (i, i + 1)
-                    d_dst = math.hypot(x - dx, y - 0)
-                    h.tx_power = TX_POWER_W * min(1.0, (d_dst / HOP_DIST) ** 1.5)
                     ch.nodes.append(h)
                     helpers_for_link.append(h)
                     placed += 1
@@ -668,26 +651,23 @@ def run_sim(snr_db, protocol, sim_time, seed=0, hop_dist=None, fixed_noise_var=N
         "nack_tx": stats.total_nack_tx,
         "ack_tx": stats.total_ack_tx,
         "ee": stats.get_ee(),
-        "actual_snr": avg_snr_db(nv, hop_dist) if hop_dist else avg_snr_db(nv),
+        "actual_snr": avg_snr_db(noise_var, hop_dist),
         "hop_dist": hop_dist,
     }
-    if hop_dist is not None:
-        HOP_DIST = saved_dist
+    HOP_DIST = saved_dist
     return result
 
 
 # ==========================================
 # 9. 蒙特卡洛
 # ==========================================
-def mc_run(snr_db, protocol, sim_time, n_runs, hop_dist=None, fixed_noise_var=None, n_helpers=None):
+def mc_run(hop_dist, protocol, sim_time, n_runs, noise_var):
     delays, ovhds, tputs, drops, ees = [], [], [], [], []
     succs, data_txs, nack_txs = [], [], []
 
     for run_i in range(n_runs):
-        s = abs(42 + run_i * 7919 + int(snr_db * 3571) + (1 << 20)) % (2**31 - 1)
-        r = run_sim(snr_db, protocol, sim_time, seed=s,
-                    hop_dist=hop_dist, fixed_noise_var=fixed_noise_var,
-                    n_helpers=n_helpers)
+        s = abs(42 + run_i * 7919 + int(hop_dist * 3) + (1 << 20)) % (2**31 - 1)
+        r = run_sim(hop_dist, protocol, sim_time, noise_var, seed=s)
 
         delays.append(r['delay'] if not math.isnan(r['delay']) else None)
         ovhds.append(r['overhead'] if not math.isnan(r['overhead']) else None)
@@ -713,7 +693,7 @@ def mc_run(snr_db, protocol, sim_time, n_runs, hop_dist=None, fixed_noise_var=No
         "ee_mean": ee_m, "ee_ci95": ee_ci,
         "avg_success": np.mean(succs), "avg_data_tx": np.mean(data_txs),
         "avg_nack_tx": np.mean(nack_txs),
-        "actual_snr": avg_snr_db(noise_var_for_snr_db(snr_db)),
+        "actual_snr": avg_snr_db(noise_var, hop_dist), "hop_dist": hop_dist,
     }
 
 
@@ -721,9 +701,10 @@ def mc_run(snr_db, protocol, sim_time, n_runs, hop_dist=None, fixed_noise_var=No
 # 10. 主程序
 # ==========================================
 if __name__ == "__main__":
-    SNR_LIST   = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
-    SIM_TIME   = 15000
-    N_RUNS     = 5
+    HOP_DIST_LIST = [600, 800, 1000, 1200, 1500]
+    SIM_TIME   = 8000
+    N_RUNS     = 3
+    NV_REF = noise_var_for_snr_db(0.0)
 
     PROTOCOLS = []
     LABELS    = []
@@ -743,16 +724,15 @@ if __name__ == "__main__":
                for p in PROTOCOLS}
 
     print("=" * 65)
-    print(f" Monte Carlo: {N_RUNS} runs x {len(SNR_LIST)} SNR x {len(PROTOCOLS)} protocols")
-    print(f" Channel: Rayleigh + Thorp α≈{thorp_alpha(FREQ_KHZ):.1f}dB/km + low-SNR pre-selected helper")
-    print(f" Protocols: {', '.join(PROTOCOLS)}")
-    print(f" PHY: RS code error-correct model (QPSK, t=(N-K)/2) — PER-based Cpkt")
+    print(f" Monte Carlo: {N_RUNS} runs x {len(HOP_DIST_LIST)} distances x {len(PROTOCOLS)} protocols")
+    print(f" Fixed noise: 0dB SNR at 600m, Hop distances: {HOP_DIST_LIST}m")
+    print(f" PHY: MIESM (3GPP NR), SimTime={SIM_TIME}s")
     print("=" * 65)
 
     for proto in PROTOCOLS:
         print(f"\n{'='*50}\n  Protocol: {proto}\n{'='*50}")
-        for snr in SNR_LIST:
-            r = mc_run(snr, proto, SIM_TIME, N_RUNS)
+        for d in HOP_DIST_LIST:
+            r = mc_run(d, proto, SIM_TIME, N_RUNS, NV_REF)
             results[proto]['delay'][0].append(r['delay_mean'])
             results[proto]['delay'][1].append(r['delay_ci95'])
             results[proto]['overhead'][0].append(r['overhead_mean'])
@@ -763,47 +743,48 @@ if __name__ == "__main__":
             results[proto]['drop_rate'][1].append(r['drop_rate_ci95'])
             results[proto]['ee'][0].append(r['ee_mean'])
             results[proto]['ee'][1].append(r['ee_ci95'])
-            print(f"  SNR={snr:+4.1f}dB | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | "
+            print(f"  Dist={d:5d}m (SNR{r['actual_snr']:+.1f}dB) | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | "
                   f"Ovhd={r['overhead_mean']:6.3f}±{r['overhead_ci95']:.3f} | "
-                  f"Drop={r['drop_rate_mean']:.3f}±{r['drop_rate_ci95']:.3f} | Succ={r['avg_success']:.0f}")
+                  f"Succ={r['avg_success']:.0f}")
 
     # ---- 绘图 ----
     plt.rcParams.update({'font.size': 11, 'legend.fontsize': 9,
                          'xtick.labelsize': 9, 'ytick.labelsize': 9})
 
+    x_vals = HOP_DIST_LIST
     fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     for proto in PROTOCOLS:
         y = np.array(results[proto]['delay'][0])
         mask = ~np.isnan(y)
         if mask.any():
-            xm = np.array(SNR_LIST)[mask]
+            xm = np.array(x_vals)[mask]
             ax1.plot(xm, y[mask], MARKERS[proto]+'-',
                      color=COLORS[proto], lw=1.8, ms=7, label=proto,
                      markerfacecolor='white', markeredgecolor=COLORS[proto],
                      markeredgewidth=0.8)
-    ax1.set_xlabel("Average Per-Hop SNR (dB)")
+    ax1.set_xlabel("Hop Distance (m)")
     ax1.set_ylabel("End-to-End Delay (s)")
     ax1.grid(True, ls='-', alpha=0.15, color='gray')
-    ax1.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
+    ax1.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper left')
 
     for proto in PROTOCOLS:
         y = np.array(results[proto]['overhead'][0])
         mask = ~np.isnan(y)
         if mask.any():
-            xm = np.array(SNR_LIST)[mask]
+            xm = np.array(x_vals)[mask]
             ax2.plot(xm, y[mask], MARKERS[proto]+'-',
                      color=COLORS[proto], lw=1.8, ms=7, label=proto,
                      markerfacecolor='white', markeredgecolor=COLORS[proto],
                      markeredgewidth=0.8)
-    ax2.set_xlabel("Average Per-Hop SNR (dB)")
+    ax2.set_xlabel("Hop Distance (m)")
     ax2.set_ylabel("Transmission Overhead (x Usefulness)")
     ax2.grid(True, ls='-', alpha=0.15, color='gray')
-    ax2.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
+    ax2.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper left')
 
     plt.tight_layout()
-    plt.savefig("output/pro-v1_Delay_Overhead.png", dpi=200, bbox_inches='tight')
-    print("\n[OK] output/pro-v1_Delay_Overhead.png")
+    plt.savefig("v7_distance_Delay_Overhead.png", dpi=200, bbox_inches='tight')
+    print("\n[OK] v7_distance_Delay_Overhead.png")
     plt.close('all')
 
     # EE 子图
@@ -812,163 +793,52 @@ if __name__ == "__main__":
         y = np.array(results[proto]['ee'][0])
         mask = ~np.isnan(y)
         if mask.any():
-            xm = np.array(SNR_LIST)[mask]
+            xm = np.array(x_vals)[mask]
             ax_ee.plot(xm, y[mask], MARKERS[proto]+'-',
                        color=COLORS[proto], lw=1.8, ms=7, label=proto,
                        markerfacecolor='white', markeredgecolor=COLORS[proto],
                        markeredgewidth=0.8)
-    ax_ee.set_xlabel("Average Per-Hop SNR (dB)")
+    ax_ee.set_xlabel("Hop Distance (m)")
     ax_ee.set_ylabel("Energy Efficiency (bits/Joule)")
     ax_ee.grid(True, ls='-', alpha=0.15, color='gray')
-    ax_ee.legend(frameon=True, fancybox=False, edgecolor='gray', loc='lower right')
+    ax_ee.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper right')
     plt.tight_layout()
-    plt.savefig("output/pro-v1_EE.png", dpi=200, bbox_inches='tight')
-    print("[OK] output/pro-v1_EE.png")
+    plt.savefig("v7_distance_EE.png", dpi=200, bbox_inches='tight')
+    print("[OK] v7_distance_EE.png")
     plt.close('all')
 
     # ---- 文本汇总 ----
     print(f"\n{'='*65}")
-    print("Overhead (Tx/Useful) mean ± 95% CI")
-    header = f"{'SNR':>6s} |" + "|".join(f" {p:>15s} " for p in PROTOCOLS)
+    print("Overhead (Tx/Useful) mean ± 95% CI (fixed noise: 0dB SNR at 600m)")
+    header = f"{'Dist':>6s} |" + "|".join(f" {p:>15s} " for p in PROTOCOLS)
     print(header)
-    for i, s in enumerate(SNR_LIST):
+    for i, d in enumerate(HOP_DIST_LIST):
         parts = []
         for proto in PROTOCOLS:
             v = results[proto]['overhead'][0][i]
             e = results[proto]['overhead'][1][i]
             parts.append(f"{v:.2f}±{e:.2f}" if not np.isnan(v) else "        n/a")
-        print(f"{s:+4.1f}dB | " + " | ".join(f"{p:>15s}" for p in parts))
+        print(f"{d:5d}m | " + " | ".join(f"{p:>15s}" for p in parts))
 
-    print(f"\nDelay (s) mean ± 95% CI")
+    print(f"\nDelay (s) mean ± 95% CI (fixed noise: 0dB SNR at 600m)")
+    header = f"{'Dist':>6s} |" + "|".join(f" {p:>15s} " for p in PROTOCOLS)
     print(header)
-    for i, s in enumerate(SNR_LIST):
+    for i, d in enumerate(HOP_DIST_LIST):
         parts = []
         for proto in PROTOCOLS:
             v = results[proto]['delay'][0][i]
             e = results[proto]['delay'][1][i]
             parts.append(f"{v:.0f}±{e:.0f}" if not np.isnan(v) else "        n/a")
-        print(f"{s:+4.1f}dB | " + " | ".join(f"{p:>15s}" for p in parts))
+        print(f"{d:5d}m | " + " | ".join(f"{p:>15s}" for p in parts))
 
     print(f"\nEnergy Efficiency (bits/Joule) mean ± 95% CI")
     print(header)
-    for i, s in enumerate(SNR_LIST):
+    for i, d in enumerate(HOP_DIST_LIST):
         parts = []
         for proto in PROTOCOLS:
             v = results[proto]['ee'][0][i]
             e = results[proto]['ee'][1][i]
             parts.append(f"{v:.1f}±{e:.1f}" if not np.isnan(v) else "        n/a")
-        print(f"{s:+4.1f}dB | " + " | ".join(f"{p:>15s}" for p in parts))
+        print(f"{d:5d}m | " + " | ".join(f"{p:>15s}" for p in parts))
     print("=" * 65)
     print("Done.")
-    
-    # ==========================================
-    # 距离扫描 (不修改已有SNR图)
-    # ==========================================
-    D_LIST = [400, 600, 800, 1000]
-    NV_D = noise_var_for_snr_db(0.0)
-    SIM_T = 8000
-    N_RUNS_DIST = 5
-    
-    print(f"\n{'='*65}")
-    print(f" Distance sweep: {D_LIST}m, fixed noise (0dB@600m), SimTime={SIM_T}s")
-    print(f" Protocols: {', '.join(PROTOCOLS)}")
-    print("=" * 65)
-    
-    d_results = {p: {'delay': ([], []), 'overhead': ([], []), 'success': []}
-                 for p in PROTOCOLS}
-    
-    for proto in PROTOCOLS:
-        print(f"\n  Protocol: {proto}")
-        for d in D_LIST:
-            r = mc_run(0.0, proto, SIM_T, N_RUNS_DIST, hop_dist=d, fixed_noise_var=NV_D)
-            d_results[proto]['delay'][0].append(r['delay_mean'])
-            d_results[proto]['delay'][1].append(r['delay_ci95'])
-            d_results[proto]['overhead'][0].append(r['overhead_mean'])
-            d_results[proto]['overhead'][1].append(r['overhead_ci95'])
-            d_results[proto]['success'].append(r['avg_success'])
-            print(f"    Dist={d:5d}m (SNR{r['actual_snr']:+.1f}dB) | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | "
-                  f"Ovhd={r['overhead_mean']:6.3f}±{r['overhead_ci95']:.3f} | Succ={r['avg_success']:.0f}")
-    
-    x_d = D_LIST
-    fig_d, (ax_d1, ax_d2) = plt.subplots(1, 2, figsize=(14, 5))
-    for proto in PROTOCOLS:
-        y = np.array(d_results[proto]['delay'][0]); mask = ~np.isnan(y)
-        if mask.any():
-            xm = np.array(x_d)[mask]
-            ax_d1.plot(xm, y[mask], MARKERS[proto]+'-',
-                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
-                     markerfacecolor='white', markeredgecolor=COLORS[proto],
-                     markeredgewidth=0.8)
-    ax_d1.set_xlabel("Hop Distance (m)"); ax_d1.set_ylabel("End-to-End Delay (s)")
-    ax_d1.grid(True, ls='-', alpha=0.15, color='gray')
-    ax_d1.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper left')
-    
-    for proto in PROTOCOLS:
-        y = np.array(d_results[proto]['overhead'][0]); mask = ~np.isnan(y)
-        if mask.any():
-            xm = np.array(x_d)[mask]
-            ax_d2.plot(xm, y[mask], MARKERS[proto]+'-',
-                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
-                     markerfacecolor='white', markeredgecolor=COLORS[proto],
-                     markeredgewidth=0.8)
-    ax_d2.set_xlabel("Hop Distance (m)"); ax_d2.set_ylabel("Transmission Overhead (x Usefulness)")
-    ax_d2.grid(True, ls='-', alpha=0.15, color='gray')
-    ax_d2.legend(frameon=True, fancybox=False, edgecolor='gray', loc='upper left')
-    
-    plt.tight_layout()
-    plt.savefig("output/pro-v1_Distance_Delay_Overhead.png", dpi=200, bbox_inches='tight')
-    print("\n[OK] output/pro-v1_Distance_Delay_Overhead.png")
-    plt.close('all')
-
-    # 距离扫成功包数
-    fig_succ, ax_succ = plt.subplots(1, 1, figsize=(7, 5))
-    for proto in PROTOCOLS:
-        y = np.array(d_results[proto]['success'])
-        mask = ~np.isnan(y)
-        if mask.any():
-            xm = np.array(x_d)[mask]
-            ax_succ.plot(xm, y[mask], MARKERS[proto]+'-',
-                     color=COLORS[proto], lw=1.8, ms=7, label=proto,
-                     markerfacecolor='white', markeredgecolor=COLORS[proto],
-                     markeredgewidth=0.8)
-    ax_succ.set_xlabel("Hop Distance (m)")
-    ax_succ.set_ylabel("Successful Packets Delivered")
-    ax_succ.grid(True, ls='-', alpha=0.15, color='gray')
-    ax_succ.legend(frameon=True, fancybox=False, edgecolor='gray', loc='lower left')
-    plt.tight_layout()
-    plt.savefig("output/pro-v1_Distance_Success.png", dpi=200, bbox_inches='tight')
-    print("[OK] output/pro-v1_Distance_Success.png")
-    plt.close('all')
-
-    # ==========================================
-    # Helper数量扫 — 空间分集效应 (仅CA-CHARQ)
-    # ==========================================
-    H_LIST = [1, 2, 3, 4, 5]
-    FIXED_SNR_H = 0.0
-    SIM_T_H = 5000
-    N_RUNS_H = 3
-    
-    print(f"\n{'='*65}")
-    print(f" Helper count sweep (CA-CHARQ only): {H_LIST}, SNR={FIXED_SNR_H}dB, SimTime={SIM_T_H}s")
-    print("=" * 65)
-    
-    ca_delays = []; ca_cis = []
-    for n in H_LIST:
-        r = mc_run(FIXED_SNR_H, PROTO_CA, SIM_T_H, N_RUNS_H, n_helpers=n)
-        ca_delays.append(r['delay_mean'])
-        ca_cis.append(r['delay_ci95'])
-        print(f"  N_helpers={n} | D={r['delay_mean']:8.1f}±{r['delay_ci95']:5.1f}s | Succ={r['avg_success']:.0f}")
-    
-    fig_h2, ax_h2 = plt.subplots(1, 1, figsize=(6, 4.5))
-    y = np.array(ca_delays); mask = ~np.isnan(y)
-    xm = np.array(H_LIST)[mask]
-    ax_h2.plot(xm, y[mask], 'o-', color='#C44E52', lw=2.0, ms=8,
-               markerfacecolor='white', markeredgecolor='#C44E52', markeredgewidth=1.5)
-    ax_h2.set_xlabel("Number of Helpers per Hop")
-    ax_h2.set_ylabel("End-to-End Delay (s)")
-    ax_h2.set_title("CA-CHARQ Delay vs Helper Count (SNR=0dB)")
-    ax_h2.grid(True, ls='-', alpha=0.15, color='gray')
-    plt.tight_layout()
-    plt.savefig("output/pro-v1_Helpers_Delay.png", dpi=200, bbox_inches='tight')
-    print("\n[OK] output/pro-v1_Helpers_Delay.png")
-    plt.close('all')
