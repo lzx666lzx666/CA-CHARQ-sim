@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-CA-CHARQ v8-test — 15 helpers for ALL protocols (fair resource comparison)
-============================================================================
-Same as v8 single-sink topology, but CA-CHARQ uses 15 helpers (same as C-ARQ/C-HARQ).
-v8 baseline: single shared sink, _link_level() SNR-activated, GTO from actual distance.
+CA-CHARQ v5 (MAX) — Multi-Chain Concurrent Cooperative HARQ
+============================================================
+3 independent chains share 12 free-roaming helpers.
+Cross-chain scheduler with priority queue, preemption, and isolation.
+
+Scenario: 3 fan-shaped chains, sink-convergent, 5 hops × 600m each.
+Helpers: 12 randomly placed in overlapping region, full freedom.
+Controls: S&W/C-ARQ/C-HARQ with 15 pre-assigned helpers (5 per chain).
 """
 
 import simpy, math, random, numpy as np, matplotlib; matplotlib.use('TkAgg')
@@ -29,20 +33,14 @@ PROTO_CA     = "CA-CHARQ"
 # 0. Multi-chain Parameters
 # ==========================================
 NUM_CHAINS       = 3
-N_HELPERS_TOTAL  = 15   # v8-test: 15 helpers for CA-CHARQ (fair comparison with controls)
-N_HELPERS_PER_CHAIN_CTRL = 5
+N_HELPERS_TOTAL  = 6   # extreme scarcity: 6 helpers for 3×5=15 links → competition mandatory
+N_HELPERS_PER_CHAIN_CTRL = 5   # for S&W/C-ARQ/C-HARQ: 15 total, 5 per chain
 W1, W2, W3 = 0.40, 0.25, 0.35
 T_MAX_WINDOW    = 1.5
 T_PROTECTION_GAP = 0.05
 INITIAL_ENERGY   = 10000.0
 CHARQ_FEC_EXTRA  = 12
 MAX_PARITY_QPSK  = 54
-MIN_CAPTURE_SNR_LINEAR = 0.05
-CHAIN_Y_OFFSETS = [-600, 0, 600]
-T_BACKOFF_JITTER  = 0.08
-SNR_WINDOW_SIZE = 8
-SINK_ID = 9999
-SINK_X, SINK_Y = 3000, 0
 
 # 5-level RV
 RV_EXTRA = {1: 6, 1.5: 9, 2: 12, 2.5: 15, 3: 18}
@@ -109,8 +107,7 @@ class MultiChainStats:
     def _make_chain_stats(self):
         return {
             'tx_chunks': 0, 'data_tx': 0, 'nack_tx': 0, 'ack_tx': 0,
-            'energy': 0.0, 'delays': [], 'success': 0, 'drops': 0, 'fate': {},
-            'collisions': 0
+            'energy': 0.0, 'delays': [], 'success': 0, 'drops': 0, 'fate': {}
         }
 
     def record_tx(self, cid, n_chunks):  self.chain[cid]['tx_chunks'] += n_chunks
@@ -118,7 +115,6 @@ class MultiChainStats:
     def record_nack_tx(self, cid):       self.chain[cid]['nack_tx'] += 1
     def record_ack_tx(self, cid):        self.chain[cid]['ack_tx'] += 1
     def record_energy(self, cid, j):     self.chain[cid]['energy'] += j
-    def record_collision(self, cid):     self.chain[cid]['collisions'] += 1
 
     def e2e_success(self, cid, pid, delay):
         c = self.chain[cid]
@@ -162,9 +158,6 @@ class MultiChainStats:
         tot_energy = sum(c['energy'] for c in self.chain)
         return tot_bits / tot_energy if tot_energy > 0 else float('nan')
 
-    def get_global_collisions(self):
-        return sum(c['collisions'] for c in self.chain)
-
 
 # ==========================================
 # 3. Packets (with chain_id)
@@ -201,12 +194,10 @@ class PhysicalPacket:
 # 4. Channel (with cross-chain detection)
 # ==========================================
 class Channel:
-    def __init__(self, env, noise_var, stats=None):
+    def __init__(self, env, noise_var):
         self.env, self.nodes = env, []
         self.noise_var = noise_var
         self.cross_talk_events = 0
-        self.collision_drops = 0
-        self.stats = stats
 
     def broadcast(self, sender, pkt):
         for rx in self.nodes:
@@ -217,36 +208,12 @@ class Channel:
 
     def _deliver(self, rx, sender, pkt, dist, delay):
         yield self.env.timeout(delay)
-
-        # L2: half-duplex — rx cannot receive while transmitting
-        if hasattr(rx, 'tx_busy_until') and self.env.now < rx.tx_busy_until:
-            self.collision_drops += 1
-            if self.stats:
-                self.stats.record_collision(getattr(pkt, 'chain_id', 0))
-            return
-
-        # L2: single-signal constraint — rx already processing another signal
-        if hasattr(rx, 'rx_busy_until') and self.env.now < rx.rx_busy_until:
-            self.collision_drops += 1
-            if self.stats:
-                self.stats.record_collision(getattr(pkt, 'chain_id', 0))
-            return
-
-        # Compute SNR before capture decision
-        mean_snr = 0.0
         if pkt.num_chunks > 0:
             loss = transmission_loss(dist, FREQ_KHZ)
             asnr = sender.tx_power / (loss * self.noise_var)
             I = np.random.randn(pkt.num_chunks) / math.sqrt(2.0)
             Q = np.random.randn(pkt.num_chunks) / math.sqrt(2.0)
             pkt.received_snr = asnr * (I**2 + Q**2)
-            mean_snr = float(np.mean(pkt.received_snr))
-
-        # Fix#5: capture receiver only if SNR exceeds threshold (weak signals don't block)
-        dur = pkt.tx_duration()
-        if pkt.num_chunks == 0 or mean_snr >= MIN_CAPTURE_SNR_LINEAR:
-            rx.rx_busy_until = self.env.now + dur
-
         # Cross-chain detection for helper's scheduler
         if (hasattr(rx, 'scheduler') and rx.scheduler and
                 hasattr(pkt, 'chain_id') and hasattr(rx, 'current_chain_id')):
@@ -267,10 +234,6 @@ class UnderwaterNode:
         self.inbox = simpy.Store(env); self.tx_queue = simpy.Store(env)
         self.energy = INITIAL_ENERGY; self.tx_power = TX_POWER_W
 
-        # L1: half-duplex / single-signal constraint
-        self.tx_busy_until = 0.0
-        self.rx_busy_until = 0.0
-
         self.soft_buffer = {}; self.merge_count = defaultdict(int)
         self.hop_source = {}; self.nack_count = defaultdict(int); self.nack_sent = set()
         self.fec_sent = defaultdict(int); self.helper_sent = defaultdict(int)
@@ -281,8 +244,6 @@ class UnderwaterNode:
         self.is_low_snr_selected = False
         self.helper_cancel_events = {}; self.helper_tx_cnt = defaultdict(int)
         self.next_hop_id = None; self.is_dest = False
-        self.is_sink = False      # v8: single-sink topology
-        self.snr_history = []     # v7: sliding window for _link_level()
 
         # v5 scheduler (helpers only)
         self.scheduler = None
@@ -293,10 +254,9 @@ class UnderwaterNode:
             self.env.process(self.tx_loop())
 
     def _hkey(self, pid, pkt_chain=None):
-        """Compound key for helpers and sink: (chain_id, pid). Routers use pid only."""
-        if pkt_chain is not None and pkt_chain >= 0:
-            if self.role == 'HELPER' or self.is_sink:
-                return (pkt_chain, pid)
+        """Compound key for helpers: (chain_id, pid). Routers use pid only."""
+        if self.role == 'HELPER' and pkt_chain is not None and pkt_chain >= 0:
+            return (pkt_chain, pid)
         return pid
 
     # ========== Tx Loop ==========
@@ -307,10 +267,7 @@ class UnderwaterNode:
             self.pending_response.pop(pid, None)
 
             yield self.env.process(self._send_data(self.next_hop_id, pid, 0, creation_time))
-            # v8: compute rtt from actual hop distance
-            dst_node = next((n for n in self.network.nodes if n.node_id == self.next_hop_id), None)
-            hop_dist = math.hypot(self.x - dst_node.x, self.y - dst_node.y) if dst_node else HOP_DIST
-            rtt = hop_dist / SOUND_SPEED * 2
+            rtt = HOP_DIST / SOUND_SPEED * 2
             gto = rtt + 1.5
 
             for retry_i in range(MAX_RETRIES):
@@ -377,21 +334,19 @@ class UnderwaterNode:
         pid = pkt.pid
 
         if pkt.pkt_type == PKT_DATA:
-            # --- Router: accept matching chain_id; sink accepts all ---
+            # --- Router: only accept matching chain_id ---
             if self.role == 'ROUTER' and pkt.hop_rx == self.node_id:
-                if not self.is_sink and getattr(pkt, 'chain_id', self.chain_id) != self.chain_id:
-                    return
-                pkt_cid = getattr(pkt, 'chain_id', 0)
-                key = self._hkey(pid, pkt_cid)
-                if key not in self.soft_buffer:
-                    self.soft_buffer[key] = np.zeros(N_CHANNEL_SYMS + MAX_PARITY_QPSK)
-                    self.hop_source[key] = pkt.hop_tx
-                buf = self.soft_buffer[key]
-                if isinstance(buf, str):
-                    yield self.env.process(self._send_ack_s(self.hop_source.get(key, pkt.hop_tx), pid, pkt_cid))
+                if getattr(pkt, 'chain_id', self.chain_id) != self.chain_id:
+                    return  # cross-chain rejection
+                if pid not in self.soft_buffer:
+                    self.soft_buffer[pid] = np.zeros(N_CHANNEL_SYMS + MAX_PARITY_QPSK)
+                    self.hop_source[pid] = pkt.hop_tx
+                buf = self.soft_buffer[pid]
+                if isinstance(buf, str):  # already decoded
+                    yield self.env.process(self._send_ack(self.hop_source.get(pid, pkt.hop_tx), pid))
                     return
 
-                self.merge_count[key] += 1
+                self.merge_count[pid] += 1
                 n_snr = min(len(pkt.received_snr), len(buf))
                 if pkt.fec_idx > 0 or pkt.rv_level > 0:
                     par_start = N_CHANNEL_SYMS
@@ -403,18 +358,18 @@ class UnderwaterNode:
                 else:
                     buf[:n_snr] += pkt.received_snr[:n_snr]
 
-                decode_ok = self._try_decode(key)
+                decode_ok = self._try_decode(pid)
                 if decode_ok:
-                    self.soft_buffer[key] = "SUCCESS"
-                    yield self.env.process(self._send_ack_s(self.hop_source.get(key, pkt.hop_tx), pid, pkt_cid))
+                    self.soft_buffer[pid] = "SUCCESS"
+                    yield self.env.process(self._send_ack(self.hop_source.get(pid, pkt.hop_tx), pid))
                     if self.is_dest:
-                        self.stats.e2e_success(pkt_cid, pid, self.env.now - pkt.creation_time)
+                        self.stats.e2e_success(self.chain_id, pid, self.env.now - pkt.creation_time)
                     else:
                         self.tx_queue.put((pid, pkt.creation_time))
-                elif self.merge_count[key] >= MAX_RETRIES + 1:
-                    self.soft_buffer.pop(key, None); self.merge_count.pop(key, None)
+                elif self.merge_count[pid] >= MAX_RETRIES + 1:
+                    self.soft_buffer.pop(pid, None); self.merge_count.pop(pid, None)
                 else:
-                    if (self.protocol == PROTO_CA and pkt.hop_tx == self.hop_source.get(key)):
+                    if (self.protocol == PROTO_CA and pkt.hop_tx == self.hop_source.get(pid)):
                         active = buf[buf > 0]
                         if len(active) > 0:
                             gamma_est = float(np.mean(active))
@@ -425,10 +380,10 @@ class UnderwaterNode:
                             elif eta < 3.0:   cpkt = 1
                             else:             cpkt = 0
                         else: cpkt = 0
-                        yield self.env.process(self._send_nack_cpkt_s(self.hop_source[key], pid, cpkt, pkt_cid))
-                    elif pkt.hop_tx == self.hop_source.get(key) and pid not in self.nack_sent:
+                        yield self.env.process(self._send_nack_cpkt(self.hop_source[pid], pid, cpkt))
+                    elif pkt.hop_tx == self.hop_source.get(pid) and pid not in self.nack_sent:
                         self.nack_sent.add(pid)
-                        yield self.env.process(self._send_nack_s(self.hop_source[key], pid, pkt_cid))
+                        yield self.env.process(self._send_nack(self.hop_source[pid], pid))
 
             # --- helper cancel (CA-CHARQ cross-competition) ---
             if (self.role == 'HELPER' and self.protocol == PROTO_CA
@@ -452,17 +407,9 @@ class UnderwaterNode:
                 buf[:n_snr] += pkt.received_snr[:n_snr]
                 decode_ok = self._try_decode(hp)
                 if decode_ok:
-                    # v7: track SNR for _link_level()
-                    if len(pkt.received_snr) > 0:
-                        self.snr_history.append(float(np.mean(pkt.received_snr)))
-                        if len(self.snr_history) > SNR_WINDOW_SIZE:
-                            self.snr_history.pop(0)
                     if self.protocol == PROTO_CA:
-                        # B3 fix: compute c_pkt from actual PER (not hardcoded 0.5)
-                        per_now = self._compute_per(buf)
-                        cpkt_h = compute_cpkt(per_now)
                         self.soft_buffer[hp] = {"status": "DECODED", "creation_time": pkt.creation_time,
-                                                "c_pkt": 1.0 - per_now, "cpkt": cpkt_h}
+                                                "c_pkt": 0.5, "cpkt": 0}
                     else:
                         self.soft_buffer[hp] = {"status": "DECODED", "creation_time": pkt.creation_time}
 
@@ -487,7 +434,7 @@ class UnderwaterNode:
                             # Cpkt=2/3: compete for helpers (scarce resource)
                             self.env.process(self.contend(pkt))
                         else:
-                            # Cpkt=0/1: direct send via scheduler, only bottleneck-best helper responds
+                            # Cpkt=0/1: direct send, only bottleneck-best helper responds
                             if cpkt_v <= 1 and (not self.is_low_snr_selected or self.helper_tx_cnt[pid] >= 3):
                                 pass
                             else:
@@ -495,16 +442,9 @@ class UnderwaterNode:
                                 rv = RV_MATRIX.get(cpkt_v, {0:3, 1:3, 2:3}).get(link_lvl, 3)
                                 self.helper_tx_cnt[pid] += 1
                                 nack_cid = getattr(pkt, 'chain_id', 0)
-                                # v5: route through scheduler
-                                if self.scheduler:
-                                    status, rv_s = self.scheduler.request(
-                                        nack_cid, pid, pkt.hop_tx, cpkt_v, rv, buf["creation_time"])
-                                    if status == 'serve':
-                                        yield self.env.process(self._send_data(
-                                            pkt.hop_tx, pid, rv_s, buf["creation_time"], chain_id=nack_cid))
-                                else:
-                                    yield self.env.process(self._send_data(
-                                        pkt.hop_tx, pid, rv, buf["creation_time"], chain_id=nack_cid))
+                                yield self.env.process(self._send_data(
+                                    pkt.hop_tx, pid, rv, buf["creation_time"],
+                                    chain_id=nack_cid))
 
             elif self.role == 'HELPER' and self.is_selected:
                 if (pkt.hop_rx, pkt.hop_tx) in self.helper_for_link:
@@ -513,19 +453,16 @@ class UnderwaterNode:
                         if self.protocol == PROTO_CHARQ:
                             if self.fec_sent[pid] == 0:
                                 self.fec_sent[pid] = 1
-                                yield self.env.process(self._send_fec(pkt.hop_tx, pid, 1, buf["creation_time"],
-                                                                      chain_id=getattr(pkt, 'chain_id', 0)))
+                                yield self.env.process(self._send_fec(pkt.hop_tx, pid, 1, buf["creation_time"]))
                             if self.fec_sent[pid] == 1:
                                 self.fec_sent[pid] = 2
                                 yield self.env.timeout(T_PROTECTION_GAP + (CHARQ_FEC_EXTRA // 2) * RS_BITS_PER_SYM / BIT_RATE)
-                                yield self.env.process(self._send_fec(pkt.hop_tx, pid, 2, buf["creation_time"],
-                                                                      chain_id=getattr(pkt, 'chain_id', 0)))
+                                yield self.env.process(self._send_fec(pkt.hop_tx, pid, 2, buf["creation_time"]))
                         elif self.protocol == PROTO_CARQ:
                             cnt = self.helper_sent[pid]
                             if cnt < MAX_RETRIES:
                                 self.helper_sent[pid] = cnt + 1
-                                yield self.env.process(self._send_data(pkt.hop_tx, pid, 0, buf["creation_time"],
-                                                                       chain_id=getattr(pkt, 'chain_id', 0)))
+                                yield self.env.process(self._send_data(pkt.hop_tx, pid, 0, buf["creation_time"]))
 
         # --- ACK ---
         elif pkt.pkt_type == PKT_ACK:
@@ -538,10 +475,6 @@ class UnderwaterNode:
                 if self.protocol == PROTO_CA and pid in self.helper_ack_events:
                     hev = self.helper_ack_events[pid]
                     if not hev.triggered: hev.succeed({'type': 'ACK'})
-            # D6: helpers in competition cancel on hearing ACK (reliable, via destination)
-            if self.role == 'HELPER' and self.protocol == PROTO_CA and pid in self.helper_cancel_events:
-                ce = self.helper_cancel_events[pid]
-                if not ce.triggered: ce.succeed()
 
     # ========== Helper Contention ==========
     def contend(self, pkt):
@@ -552,27 +485,16 @@ class UnderwaterNode:
         if not isinstance(buf, dict) or buf.get("status") != "DECODED": return
 
         my_c = buf.get("c_pkt", 1.0)
-        # B1 fix: compute correct coordinates from node IDs
-        link_src, link_dst = (pkt.hop_rx, pkt.hop_tx)  # NACK: rx=src, tx=dst
-        cid_for_pos = getattr(pkt, 'chain_id', 0)
-        y_off = CHAIN_Y_OFFSETS[cid_for_pos % 3]
-        hop_src = link_src % 100
-        sx, sy = hop_src * HOP_DIST, y_off
-        if link_dst == SINK_ID:
-            dx, dy = SINK_X, SINK_Y
-        else:
-            hop_dst = link_dst % 100
-            dx, dy = hop_dst * HOP_DIST, y_off
-        d_src = math.hypot(self.x - sx, self.y - sy)
-        d_dst = math.hypot(self.x - dx, self.y - dy)
+        link_src, link_dst = (pkt.hop_rx, pkt.hop_tx)  # for this specific NACK
+        d_src = math.hypot(self.x - link_src * HOP_DIST, self.y)
+        d_dst = math.hypot(self.x - link_dst * HOP_DIST, self.y)
         dist = max(d_src, d_dst); prop_u = dist / SOUND_SPEED
         score = (W1 * min(my_c, 1.5) + W2 * max(0.0, min(1.0, self.energy / INITIAL_ENERGY))
                  + W3 / (1.0 + prop_u / 0.4))
         t_backoff = (1.0 - np.clip(score, 0.0, 1.0)) * T_MAX_WINDOW * 2
         t_backoff += max(T_PROTECTION_GAP / 4, 0.05)
-        # D4: removed is_low_snr_selected 0.02s shortcut — compete fairly
-        # D5: add random jitter for realistic backoff diversity
-        t_backoff += random.uniform(0, T_BACKOFF_JITTER)
+        if score > 0.90: t_backoff = 0.0
+        elif pkt.cpkt < 3 and self.is_low_snr_selected: t_backoff = 0.02
 
         cancel_ev = simpy.Event(self.env)
         self.helper_cancel_events[pid] = cancel_ev
@@ -582,35 +504,12 @@ class UnderwaterNode:
             rv = RV_MATRIX.get(pkt.cpkt, {0:3, 1:3, 2:3, 3:1}).get(link_lvl, 2)
             self.helper_tx_cnt[pid] += 1
             nack_cid = getattr(pkt, 'chain_id', 0)
-            # v6: route through scheduler for serialized helper access
-            if self.scheduler:
-                status, rv_s = self.scheduler.request(
-                    nack_cid, pid, pkt.hop_tx, pkt.cpkt, rv, buf["creation_time"])
-                if status == 'serve':
-                    yield self.env.process(self._send_data(
-                        pkt.hop_tx, pid, rv_s, buf["creation_time"], chain_id=nack_cid))
-            else:
-                yield self.env.process(self._send_data(
-                    pkt.hop_tx, pid, rv, buf["creation_time"], chain_id=nack_cid))
+            yield self.env.process(self._send_data(
+                pkt.hop_tx, pid, rv, buf["creation_time"], chain_id=nack_cid))
         self.helper_cancel_events.pop(pid, None)
 
-    def _scheduler_callback(self):
-        try:
-            res = self.scheduler.on_complete()
-            while res[0] == 'serve_next':
-                _, rv, target, pid, ct, cid = res
-                yield self.env.process(self._send_data(target, pid, rv, ct, chain_id=cid))
-                res = self.scheduler.on_complete()
-        except Exception:
-            pass  # drain failed silently; pending tasks remain for next opportunity
-
     def _link_level(self):
-        if not self.snr_history:
-            return 0
-        avg_snr = sum(self.snr_history) / len(self.snr_history)
-        if avg_snr > 1.0:      return 0  # Good
-        elif avg_snr > 0.1:    return 1  # Medium
-        else:                  return 2  # Poor
+        return 0  # simplified: assume good link
 
     # ========== PHY Decode ==========
     def _compute_per(self, soft_buf):
@@ -637,9 +536,6 @@ class UnderwaterNode:
     # ========== Send Methods ==========
     def _tx_pkt(self, pkt):
         dur = pkt.tx_duration()
-        # Fix#1: wait for any ongoing transmission to finish (TX gating)
-        if self.env.now < self.tx_busy_until:
-            yield self.env.timeout(self.tx_busy_until - self.env.now)
         cid = getattr(pkt, 'chain_id', self.chain_id)
         self.stats.record_tx(cid, pkt.num_chunks)
         if pkt.pkt_type == PKT_DATA: self.stats.record_data_tx(cid)
@@ -647,13 +543,8 @@ class UnderwaterNode:
         elif pkt.pkt_type == PKT_ACK: self.stats.record_ack_tx(cid)
         self.energy -= self.tx_power * dur
         self.stats.record_energy(cid, self.tx_power * dur)
-        # L1: mark node busy for transmission duration (half-duplex)
-        self.tx_busy_until = self.env.now + dur
         yield self.env.timeout(dur)
         self.network.broadcast(self, pkt)
-        # Fix#3b: auto-drain scheduler queue after every transmission
-        if self.scheduler is not None:
-            self.env.process(self._scheduler_callback())
 
     def _send_data(self, target, pid, rv, creation_time, chain_id=None):
         cid = chain_id if chain_id is not None else self.chain_id
@@ -661,10 +552,9 @@ class UnderwaterNode:
                              chain_id=cid)
         yield self.env.process(self._tx_pkt(pkt))
 
-    def _send_fec(self, target, pid, fec_idx, creation_time, chain_id=None):
-        cid = chain_id if chain_id is not None else self.chain_id
+    def _send_fec(self, target, pid, fec_idx, creation_time):
         pkt = PhysicalPacket(PKT_DATA, self.node_id, target, pid, 0, creation_time,
-                              fec_idx=fec_idx, chain_id=cid)
+                             fec_idx=fec_idx, chain_id=self.chain_id)
         yield self.env.process(self._tx_pkt(pkt))
 
     def _send_ack(self, target, pid):
@@ -680,47 +570,26 @@ class UnderwaterNode:
         pkt.cpkt = cpkt
         yield self.env.process(self._tx_pkt(pkt))
 
-    # v8: sink variants with explicit chain_id
-    def _send_ack_s(self, target, pid, cid):
-        pkt = PhysicalPacket(PKT_ACK, self.node_id, target, pid, chain_id=cid)
-        yield self.env.process(self._tx_pkt(pkt))
-
-    def _send_nack_s(self, target, pid, cid):
-        pkt = PhysicalPacket(PKT_NACK, self.node_id, target, pid, chain_id=cid)
-        yield self.env.process(self._tx_pkt(pkt))
-
-    def _send_nack_cpkt_s(self, target, pid, cpkt, cid):
-        pkt = PhysicalPacket(PKT_NACK, self.node_id, target, pid, chain_id=cid)
-        pkt.cpkt = cpkt
-        yield self.env.process(self._tx_pkt(pkt))
-
 
 # ==========================================
-# 6. Topology Generator v8 — Single Shared Sink
+# 6. Topology Generator (v3: per-hop bottleneck helper selection)
 # ==========================================
 def build_topology(env, protocol, stats, ch, nv, seed):
     random.seed(seed); np.random.seed(seed)
     nodes = []
     chain_offsets = [-600, 0, 600]
     HOP_PER_CHAIN = NUM_HOPS  # 5
-    HELPERS_PER_LINK = 3
-    R = HOP_DIST
+    HELPERS_PER_LINK = 3      # max helpers assigned per hop link
 
-    # --- Phase 1: Create single shared sink + routers per chain ---
+    # --- Phase 1: Create routers for all chains ---
     all_routers = []
-    sink = UnderwaterNode(env, SINK_ID, SINK_X, SINK_Y, 'ROUTER', protocol, stats, ch, nv, chain_id=-1)
-    sink.is_dest = True; sink.is_sink = True
-    ch.nodes.append(sink); nodes.append(sink)
-
     for cid in range(NUM_CHAINS):
         y_off = chain_offsets[cid]
-        for i in range(HOP_PER_CHAIN):  # 0..4 routers per chain
-            x = i * R; nid = cid * 100 + i
+        for i in range(HOP_PER_CHAIN + 1):
+            x = i * HOP_DIST; nid = cid * 100 + i
             n = UnderwaterNode(env, nid, x, y_off, 'ROUTER', protocol, stats, ch, nv, chain_id=cid)
-            if i < HOP_PER_CHAIN - 1:
-                n.next_hop_id = cid * 100 + i + 1
-            else:
-                n.next_hop_id = SINK_ID  # last router → shared sink
+            if i < HOP_PER_CHAIN: n.next_hop_id = cid * 100 + i + 1
+            if i == HOP_PER_CHAIN: n.is_dest = True
             all_routers.append(n); ch.nodes.append(n); nodes.append(n)
 
     # --- Phase 2: Place helpers randomly ---
@@ -753,6 +622,7 @@ def build_topology(env, protocol, stats, ch, nv, seed):
         placed += 1
 
     # --- Phase 3: Pre-compute per-link helper ranking ---
+    # link_helpers[(cid, hop)] = [(distance_score, x, y), ...] sorted by bottleneck distance
     link_candidates = {}
     for cid in range(NUM_CHAINS):
         y_off = chain_offsets[cid]
@@ -762,14 +632,11 @@ def build_topology(env, protocol, stats, ch, nv, seed):
             scores = []
             for (hx, hy) in helper_positions:
                 d_src = math.hypot(hx - sx, hy - y_off)
-                if hop == HOP_PER_CHAIN - 1:
-                    d_dst = math.hypot(hx - SINK_X, hy - SINK_Y)  # last hop → sink
-                else:
-                    d_dst = math.hypot(hx - dx, hy - y_off)
-                d_bn = max(d_src, d_dst)
+                d_dst = math.hypot(hx - dx, hy - y_off)
+                d_bn = max(d_src, d_dst)  # bottleneck distance
                 scores.append((d_bn, hx, hy))
             scores.sort(key=lambda s: s[0])
-            link_candidates[key] = scores[:HELPERS_PER_LINK]
+            link_candidates[key] = scores[:HELPERS_PER_LINK]  # top 3
 
     # --- Phase 4: Create helper nodes, assign links ---
     helper_nodes = []
@@ -778,6 +645,8 @@ def build_topology(env, protocol, stats, ch, nv, seed):
         h = UnderwaterNode(env, nid, hx, hy, 'HELPER', protocol, stats, ch, nv, chain_id=-1)
         if protocol == PROTO_CA:
             h.scheduler = HelperScheduler(env)
+
+        # Find which links this helper is top-3 for
         for cid in range(NUM_CHAINS):
             y_off = chain_offsets[cid]
             for hop in range(HOP_PER_CHAIN):
@@ -786,17 +655,15 @@ def build_topology(env, protocol, stats, ch, nv, seed):
                 for rank, (d, cx, cy) in enumerate(candidates):
                     if abs(cx - hx) < 1e-6 and abs(cy - hy) < 1e-6:
                         link_src = cid * 100 + hop
-                        link_dst = cid * 100 + hop + 1 if hop < HOP_PER_CHAIN - 1 else SINK_ID
+                        link_dst = cid * 100 + hop + 1
                         h.helper_for_link.append((link_src, link_dst))
-                        if rank == 0:
+                        if rank == 0:  # bottleneck-best → low-SNR selected
                             h.is_low_snr_selected = True
                         if rank < HELPERS_PER_LINK and protocol in (PROTO_CARQ, PROTO_CHARQ) and rank == 0:
                             h.is_selected = True
-                        sx = hop * R
-                        if hop < HOP_PER_CHAIN - 1:
-                            dd = math.hypot(hx - (hop + 1) * R, hy - y_off)
-                        else:
-                            dd = math.hypot(hx - SINK_X, hy - SINK_Y)
+                        # Set tx power from closest destination
+                        sx = hop * R; dx = (hop + 1) * R
+                        dd = math.hypot(hx - dx, hy - y_off)
                         h.tx_power = TX_POWER_W * min(1.0, (dd / HOP_DIST) ** 1.5)
         ch.nodes.append(h); nodes.append(h); helper_nodes.append(h)
 
@@ -811,11 +678,9 @@ def run_sim(snr_db, protocol, sim_time, seed=0):
     env = simpy.Environment()
     stats = MultiChainStats(sim_time, NUM_CHAINS)
     nv = noise_var_for_target_snr_db(snr_db)
-    ch = Channel(env, nv, stats=stats)
+    ch = Channel(env, nv)
 
     _, routers_list = build_topology(env, protocol, stats, ch, nv, seed)
-
-    random.seed(seed)
 
     # Packet generators (one per chain)
     def gen(cid):
@@ -844,8 +709,6 @@ def run_sim(snr_db, protocol, sim_time, seed=0):
         'global_delay': stats.get_global_delay(),
         'global_overhead': stats.get_global_overhead(),
         'global_ee': stats.get_global_ee(),
-        'collisions': ch.collision_drops,
-        'global_collisions': stats.get_global_collisions(),
     }
 
 
@@ -853,7 +716,7 @@ def run_sim(snr_db, protocol, sim_time, seed=0):
 # 8. Monte Carlo
 # ==========================================
 def mc_run(snr_db, protocol, sim_time, n_runs):
-    g_delays, g_ohs, g_ees, succs, cols = [], [], [], [], []
+    g_delays, g_ohs, g_ees, succs = [], [], [], []
     for run_i in range(n_runs):
         s = abs(42 + run_i * 7919 + int(snr_db * 3571) + (1 << 20)) % (2**31 - 1)
         r = run_sim(snr_db, protocol, sim_time, seed=s)
@@ -861,7 +724,6 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
         g_ohs.append(r['global_overhead'] if not math.isnan(r['global_overhead']) else None)
         g_ees.append(r['global_ee'] if not math.isnan(r['global_ee']) else None)
         succs.append(sum(r['successes']))
-        cols.append(r.get('collisions', 0))
 
     def ci(arr):
         a = np.array([x for x in arr if x is not None], dtype=float)
@@ -875,7 +737,6 @@ def mc_run(snr_db, protocol, sim_time, n_runs):
         'overhead_mean': o_m, 'overhead_ci95': o_ci,
         'ee_mean': e_m, 'ee_ci95': e_ci,
         'avg_success': np.mean(succs),
-        'collisions': int(np.mean(cols)) if cols else 0,
     }
 
 
@@ -889,18 +750,18 @@ MARKERS = {PROTO_SW_ARQ: 's', PROTO_CARQ: '^',
 
 if __name__ == "__main__":
     SNR_LIST = [0.0, 2.0, 4.0, 6.0, 8.0]
-    SIM_TIME = 3000
-    N_RUNS = 5
+    SIM_TIME = 6000
+    N_RUNS = 3
     ENABLE = {PROTO_SW_ARQ: True, PROTO_CARQ: True, PROTO_CHARQ: True, PROTO_CA: True}
     PROTOCOLS = [p for p in [PROTO_SW_ARQ, PROTO_CARQ, PROTO_CHARQ, PROTO_CA] if ENABLE.get(p, True)]
 
-    results = {p: {'delay': ([], []), 'overhead': ([], []), 'ee': ([], []), 'collisions': []}
+    results = {p: {'delay': ([], []), 'overhead': ([], []), 'ee': ([], [])}
                for p in PROTOCOLS}
 
     print("=" * 60)
-    print(f"  CA-CHARQ v8-test — 15 helpers ALL | {N_RUNS} MC × {len(SNR_LIST)} SNR × {len(PROTOCOLS)} proto")
-    print(f"  {NUM_CHAINS} chains × 5 hops × {HOP_DIST}m → 1 sink | {N_HELPERS_TOTAL} helpers (ALL)")
-    print(f"  SimTime: {SIM_TIME}s | Equal resource (15 helpers) comparison")
+    print(f"  CA-CHARQ v5 MAX — Multi-Chain | {N_RUNS} MC × {len(SNR_LIST)} SNR × {len(PROTOCOLS)} proto")
+    print(f"  {NUM_CHAINS} chains × 5 hops × {HOP_DIST}m | {N_HELPERS_TOTAL} helpers (CA-CHARQ)")
+    print(f"  SimTime: {SIM_TIME}s | Chains share helpers — scheduler active")
     print("=" * 60)
 
     for proto in PROTOCOLS:
@@ -913,11 +774,9 @@ if __name__ == "__main__":
             results[proto]['overhead'][1].append(r['overhead_ci95'])
             results[proto]['ee'][0].append(r['ee_mean'])
             results[proto]['ee'][1].append(r['ee_ci95'])
-            results[proto]['collisions'].append(r.get('collisions', 0))
             print(f"  SNR={snr:+4.1f}dB  D={r['delay_mean']:7.0f}±{r['delay_ci95']:5.0f}s  "
                   f"OH={r['overhead_mean']:5.1f}±{r['overhead_ci95']:.1f}  "
-                  f"EE={r['ee_mean']:5.0f}  Succ={r['avg_success']:.0f}  "
-                  f"Col={r.get('collisions',0):.0f}")
+                  f"EE={r['ee_mean']:5.0f}  Succ={r['avg_success']:.0f}")
 
     # Plots
     plt.rcParams.update({'font.size': 11})
@@ -930,7 +789,7 @@ if __name__ == "__main__":
                      color=COLORS[proto], lw=1.8, ms=7, label=proto,
                      markerfacecolor='white', markeredgecolor=COLORS[proto])
     ax1.set_xlabel("Per-Hop SNR (dB)"); ax1.set_ylabel("E2E Delay (s) — Global Avg")
-    ax1.set_title("CA-CHARQ v8-test MAX — 3-Chain with MAC")
+    ax1.set_title("CA-CHARQ v5 MAX — 3-Chain Concurrent")
     ax1.grid(True, ls='-', alpha=0.15, color='gray'); ax1.legend()
 
     for proto in PROTOCOLS:
@@ -944,8 +803,8 @@ if __name__ == "__main__":
     ax2.grid(True, ls='-', alpha=0.15, color='gray'); ax2.legend()
 
     plt.tight_layout()
-    plt.savefig("output/max-v8-test/max-v8-test_Delay_Overhead.png", dpi=200, bbox_inches='tight')
-    print("\n[OK] output/max-v8-test/max-v8-test_Delay_Overhead.png")
+    plt.savefig("output/max-v4/max-v4_Delay_Overhead.png", dpi=200, bbox_inches='tight')
+    print("\n[OK] output/max-v4/max-v4_Delay_Overhead.png")
     plt.close('all')
 
     fig2, ax_ee = plt.subplots(1, 1, figsize=(7, 5))
@@ -958,9 +817,9 @@ if __name__ == "__main__":
     ax_ee.set_xlabel("Per-Hop SNR (dB)"); ax_ee.set_ylabel("Energy Efficiency (bits/J) — Global Avg")
     ax_ee.grid(True, ls='-', alpha=0.15, color='gray'); ax_ee.legend()
     plt.tight_layout()
-    plt.savefig("output/max-v8-test/max-v8-test_EE.png", dpi=200, bbox_inches='tight')
-    print("[OK] output/max-v8-test/max-v8-test_EE.png")
+    plt.savefig("output/max-v4/v5_EE.png", dpi=200, bbox_inches='tight')
+    print("[OK] output/max-v4/v5_EE.png")
     plt.close('all')
 
     print("=" * 60)
-    print("CA-CHARQ v8-test MAX with MAC Done.")
+    print("CA-CHARQ v5 MAX Done.")
