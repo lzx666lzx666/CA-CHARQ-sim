@@ -3,7 +3,7 @@
 Priority-aware CA-CHARQ simulation for a concurrent underwater acoustic sensor
 network.
 
-The formal experiment compares S&W ARQ, C-ARQ, C-HARQ and CA-CHARQ.
+The formal experiment compares Stop-and-Wait ARQ, C-ARQ, C-HARQ and CA-CHARQ.
 CA-CHARQ uses packet importance in the initial redundancy,
 confidence-adaptive retransmission, cooperative contention, and every
 non-preemptive transmitter queue.  A legacy CA-CHARQ-Base entry remains
@@ -245,7 +245,8 @@ except ImportError:  # Self-contained fallback used by the bundled document runt
 # ---------------------------------------------------------------------------
 # 0. Experiment constants
 # ---------------------------------------------------------------------------
-PROTO_SW_ARQ = "S&W ARQ"
+PROTO_SW_ARQ = "停等ARQ"
+LEGACY_PROTO_SW_ARQ = "S&W ARQ"
 PROTO_CARQ = "C-ARQ"
 PROTO_CHARQ = "C-HARQ"
 PROTO_CA_BASE = "CA-CHARQ-Base"
@@ -266,6 +267,25 @@ PAPER_PROTOCOLS = (
     PROTO_CHARQ,
     PROTO_CA,
 )
+
+# Protocol identifiers are also used as CSV keys; read_summary_csv normalizes
+# legacy "S&W ARQ" files. Paper figures use these reader-facing labels.
+PAPER_PROTOCOL_LABELS = {
+    PROTO_SW_ARQ: "S&W ARQ",
+    PROTO_CARQ: PROTO_CARQ,
+    PROTO_CHARQ: PROTO_CHARQ,
+    PROTO_CA: "本方法",
+}
+
+# The simulations retain total_nodes=(21, 31, 41, 51).  Paper-facing
+# node-scale plots use the requested display labels only; no topology or
+# numeric result is recomputed.
+PAPER_NODE_SCALE_DISPLAY_LABELS = {
+    "21": "20",
+    "31": "30",
+    "41": "40",
+    "51": "50",
+}
 
 SOUND_SPEED = 1500.0
 BIT_RATE = 1200.0
@@ -2693,6 +2713,33 @@ PLOT_DASHES = {
 }
 
 
+def _paper_protocol_label(protocol: str) -> str:
+    return PAPER_PROTOCOL_LABELS.get(protocol, protocol)
+
+
+def _plot_style_key(label: str) -> str:
+    """Map a reader-facing legend label back to its internal style key."""
+    for protocol, display_label in PAPER_PROTOCOL_LABELS.items():
+        if label == display_label:
+            return protocol
+    return label
+
+
+def _topology_tick_labels(
+    factor: str, rows: Sequence[Dict[str, float]]
+) -> Dict[float, str]:
+    labels = {
+        float(row["level_index"]): str(row["level_label"])
+        for row in rows
+    }
+    if factor == "node_scale":
+        labels = {
+            position: PAPER_NODE_SCALE_DISPLAY_LABELS.get(label, label)
+            for position, label in labels.items()
+        }
+    return labels
+
+
 class PaperFigure:
     """Draw the same figure to SVG and, when Pillow is available, PNG."""
 
@@ -2727,8 +2774,18 @@ class PaperFigure:
         if key in self._font_cache:
             return self._font_cache[key]
         names = (
-            ("arialbd.ttf", "DejaVuSans-Bold.ttf")
-            if bold else ("arial.ttf", "DejaVuSans.ttf")
+            (
+                r"C:\Windows\Fonts\msyhbd.ttc",
+                r"C:\Windows\Fonts\simhei.ttf",
+                "arialbd.ttf",
+                "DejaVuSans-Bold.ttf",
+            )
+            if bold else (
+                r"C:\Windows\Fonts\msyh.ttc",
+                r"C:\Windows\Fonts\simhei.ttf",
+                "arial.ttf",
+                "DejaVuSans.ttf",
+            )
         )
         for name in names:
             try:
@@ -2752,7 +2809,7 @@ class PaperFigure:
         weight = 700 if bold else 400
         self.svg.append(
             f'<text x="{x:.2f}" y="{y:.2f}" fill="{color}" '
-            f'font-family="Arial,DejaVu Sans,sans-serif" font-size="{size}" '
+            f'font-family="Microsoft YaHei,SimHei,Arial,sans-serif" font-size="{size}" '
             f'font-weight="{weight}" text-anchor="{anchor}" '
             f'dominant-baseline="middle">{xml_escape(str(value))}</text>'
         )
@@ -3012,9 +3069,10 @@ def _draw_panel(canvas: PaperFigure, bounds: Tuple[float, float, float, float],
     for label, metric, points in prepared:
         if not points:
             continue
-        color = PLOT_COLORS[label]
-        marker = PLOT_MARKERS[label]
-        dash = PLOT_DASHES[label]
+        style_key = _plot_style_key(label)
+        color = PLOT_COLORS[style_key]
+        marker = PLOT_MARKERS[style_key]
+        dash = PLOT_DASHES[style_key]
         mapped = [(map_x(snr), map_y(value)) for snr, value, _ in points]
         canvas.polyline(mapped, color, 4, dash)
         for (snr, value, ci), (x, y) in zip(points, mapped):
@@ -3035,18 +3093,21 @@ def _draw_legend(canvas: PaperFigure, labels: Sequence[str],
     start = (width - total) / 2.0
     for index, label in enumerate(unique):
         x = start + index * item_width + 12
-        color = PLOT_COLORS[label]
-        canvas.line(x, y, x + 48, y, color, 4, PLOT_DASHES[label])
-        canvas.marker(x + 24, y, PLOT_MARKERS[label], color, 6)
+        style_key = _plot_style_key(label)
+        color = PLOT_COLORS[style_key]
+        canvas.line(x, y, x + 48, y, color, 4, PLOT_DASHES[style_key])
+        canvas.marker(x + 24, y, PLOT_MARKERS[style_key], color, 6)
         canvas.text(x + 60, y, label, 20, "#222222", anchor="start")
 
 
 def _create_figure(summary: Sequence[Dict[str, float]], output_dir: Path,
                    filename: str, figure_title: str,
                    panels: Sequence[Dict[str, object]]) -> List[Path]:
-    rows = max(1, math.ceil(len(panels) / 2))
+    columns = 1 if len(panels) == 1 else 2
+    rows = max(1, math.ceil(len(panels) / columns))
     width = 1600
-    margin_y, gap_y, panel_h = 110.0, 30.0, 480.0
+    margin_y, gap_y = 110.0, 30.0
+    panel_h = 650.0 if columns == 1 else 480.0
     height = int(margin_y + rows * panel_h + (rows - 1) * gap_y + 30.0)
     canvas = PaperFigure(width, height)
     canvas.text(width / 2, 38, figure_title, 30, bold=True)
@@ -3056,10 +3117,14 @@ def _create_figure(summary: Sequence[Dict[str, float]], output_dir: Path,
         for label, _, _ in panel["series"]  # type: ignore[index]
     ]
     _draw_legend(canvas, legend_labels, 82, width)
-    margin_x, gap_x = 45.0, 35.0
-    panel_w = (width - 2 * margin_x - gap_x) / 2.0
+    margin_x, gap_x = 90.0 if columns == 1 else 45.0, 35.0
+    panel_w = (
+        width - 2 * margin_x
+        if columns == 1
+        else (width - 2 * margin_x - gap_x) / 2.0
+    )
     for index, panel in enumerate(panels):
-        col, row = index % 2, index // 2
+        col, row = index % columns, index // columns
         bounds = (
             margin_x + col * (panel_w + gap_x),
             margin_y + row * (panel_h + gap_y),
@@ -3070,7 +3135,7 @@ def _create_figure(summary: Sequence[Dict[str, float]], output_dir: Path,
             canvas,
             bounds,
             summary,
-            str(panel["title"]),
+            "" if columns == 1 else str(panel["title"]),
             str(panel["ylabel"]),
             panel["series"],  # type: ignore[arg-type]
             panel.get("y_bounds"),  # type: ignore[arg-type]
@@ -3092,13 +3157,15 @@ def create_plots(summary: Sequence[Dict[str, float]], output_dir: Path) -> List[
         if any(str(row["protocol"]) == proto for row in summary)
     ]
     overall_series = lambda metric: [
-        (proto, proto, metric) for proto in protocols
+        (_paper_protocol_label(proto), proto, metric) for proto in protocols
     ]
     important_series = lambda metric: [
-        (proto, proto, f"important_{metric}") for proto in protocols
+        (_paper_protocol_label(proto), proto, f"important_{metric}")
+        for proto in protocols
     ]
     normal_series = lambda metric: [
-        (proto, proto, f"normal_{metric}") for proto in protocols
+        (_paper_protocol_label(proto), proto, f"normal_{metric}")
+        for proto in protocols
     ]
     ca_protocols = [
         proto for proto in (PROTO_CA_BASE, PROTO_CA) if proto in protocols
@@ -3270,6 +3337,66 @@ def create_plots(summary: Sequence[Dict[str, float]], output_dir: Path) -> List[
     return created
 
 
+def create_paper_plots(
+    summary: Sequence[Dict[str, float]], output_dir: Path
+) -> List[Path]:
+    """Create one metric per figure for direct insertion into a paper."""
+    protocols = [
+        protocol for protocol in PAPER_PROTOCOLS
+        if any(str(row["protocol"]) == protocol for row in summary)
+    ]
+    series = lambda metric: [
+        (_paper_protocol_label(protocol), protocol, metric)
+        for protocol in protocols
+    ]
+    specifications = (
+        ("paper-snr-delay", "End-to-end delay", "Delay (s)", "delay", None, False),
+        ("paper-snr-pdr", "Packet delivery ratio", "PDR", "pdr", (0.0, 1.05), False),
+        (
+            "paper-snr-overhead", "Normalized transmission overhead",
+            "Transmitted bits / delivered payload bit", "overhead", None, True,
+        ),
+        (
+            "paper-snr-energy-efficiency", "Energy efficiency",
+            "Useful payload bit / J", "energy_efficiency", None, False,
+        ),
+        (
+            "paper-snr-important-on-time", "Important-packet on-time delivery",
+            f"Delivered within {IMPORTANT_DEADLINE_S:g} s",
+            "important_on_time_pdr", (0.0, 1.05), False,
+        ),
+        (
+            "paper-snr-important-p95", "Important-packet P95 latency",
+            "P95 delay (s)", "important_delay_p95", None, False,
+        ),
+        (
+            "paper-snr-penalized-delay", "Failure-penalized end-to-end delay",
+            f"Delay with {UNDELIVERED_DELAY_PENALTY_S:g} s penalty",
+            "delivery_penalized_delay", None, False,
+        ),
+        (
+            "paper-snr-goodput", "Delivered application goodput",
+            "Useful payload bit/s", "goodput_bps", None, False,
+        ),
+    )
+    created: List[Path] = []
+    for filename, title, ylabel, metric, y_bounds, log_y in specifications:
+        created.extend(_create_figure(
+            summary,
+            output_dir,
+            filename,
+            title,
+            [{
+                "title": title,
+                "ylabel": ylabel,
+                "series": series(metric),
+                "y_bounds": y_bounds,
+                "log_y": log_y,
+            }],
+        ))
+    return created
+
+
 def create_formation_layout_figure(output_dir: Path) -> List[Path]:
     """Show whole-node deployments; selected paths are an overlay, not node types."""
     width, height = 1600, 1030
@@ -3383,7 +3510,8 @@ def create_topology_plots(
         if any(str(row["protocol"]) == protocol for row in summary)
     ]
     series = lambda metric: [
-        (protocol, protocol, metric) for protocol in protocols
+        (_paper_protocol_label(protocol), protocol, metric)
+        for protocol in protocols
     ]
     created: List[Path] = []
     for factor in PAPER_TOPOLOGY_FACTORS:
@@ -3392,11 +3520,9 @@ def create_topology_plots(
         ]
         if not factor_rows:
             continue
-        levels = sorted({
-            float(row["level_index"]): str(row["level_label"])
-            for row in factor_rows
-        }.items())
-        tick_labels = dict(levels)
+        tick_labels = dict(sorted(
+            _topology_tick_labels(factor, factor_rows).items()
+        ))
         common = {
             "x_key": "level_index",
             "xlabel": TOPOLOGY_FACTOR_LABELS[factor],
@@ -3526,6 +3652,84 @@ def create_topology_plots(
     return created
 
 
+def create_paper_topology_plots(
+    summary: Sequence[Dict[str, float]], output_dir: Path
+) -> List[Path]:
+    """Create standalone topology-sensitivity figures for paper layout."""
+    protocols = [
+        protocol for protocol in PAPER_PROTOCOLS
+        if any(str(row["protocol"]) == protocol for row in summary)
+    ]
+    series = lambda metric: [
+        (_paper_protocol_label(protocol), protocol, metric)
+        for protocol in protocols
+    ]
+    specifications = (
+        ("delay", "Successful-packet mean delay", "Delay (s)", None, False),
+        ("pdr", "Packet delivery ratio", "PDR", (0.0, 1.05), False),
+        (
+            "overhead", "Normalized transmission overhead",
+            "Transmitted bits / delivered payload bit", None, True,
+        ),
+        (
+            "energy-efficiency", "Energy efficiency",
+            "Useful payload bit / J", None, False,
+        ),
+        (
+            "important-on-time", "Important-packet on-time delivery",
+            f"Delivered within {IMPORTANT_DEADLINE_S:g} s", (0.0, 1.05), False,
+        ),
+        (
+            "important-p95", "Important-packet P95 latency",
+            "P95 delay (s)", None, False,
+        ),
+        (
+            "penalized-delay", "Failure-penalized end-to-end delay",
+            f"Delay with {UNDELIVERED_DELAY_PENALTY_S:g} s penalty", None, False,
+        ),
+        (
+            "goodput", "Delivered application goodput",
+            "Useful payload bit/s", None, False,
+        ),
+    )
+    metric_keys = {
+        "delay": "delay",
+        "pdr": "pdr",
+        "overhead": "overhead",
+        "energy-efficiency": "energy_efficiency",
+        "important-on-time": "important_on_time_pdr",
+        "important-p95": "important_delay_p95",
+        "penalized-delay": "delivery_penalized_delay",
+        "goodput": "goodput_bps",
+    }
+    created: List[Path] = []
+    for factor in PAPER_TOPOLOGY_FACTORS:
+        factor_rows = [
+            row for row in summary if str(row["factor"]) == factor
+        ]
+        if not factor_rows:
+            continue
+        tick_labels = _topology_tick_labels(factor, factor_rows)
+        for stem, title, ylabel, y_bounds, log_y in specifications:
+            created.extend(_create_figure(
+                factor_rows,
+                output_dir,
+                f"paper-{factor.replace('_', '-')}-{stem}",
+                f"{title}: {TOPOLOGY_FACTOR_LABELS[factor]}",
+                [{
+                    "title": title,
+                    "ylabel": ylabel,
+                    "series": series(metric_keys[stem]),
+                    "y_bounds": y_bounds,
+                    "log_y": log_y,
+                    "x_key": "level_index",
+                    "xlabel": TOPOLOGY_FACTOR_LABELS[factor],
+                    "x_tick_labels": tick_labels,
+                }],
+            ))
+    return created
+
+
 def read_summary_csv(path: Path) -> List[Dict[str, float]]:
     rows: List[Dict[str, float]] = []
     string_fields = {
@@ -3542,6 +3746,8 @@ def read_summary_csv(path: Path) -> List[Dict[str, float]]:
             row: Dict[str, float] = {}
             for key, value in raw.items():
                 if key in string_fields:
+                    if key == "protocol" and value == LEGACY_PROTO_SW_ARQ:
+                        value = PROTO_SW_ARQ
                     row[key] = value  # type: ignore[assignment]
                 else:
                     try:
@@ -3861,6 +4067,10 @@ def parse_args() -> argparse.Namespace:
             "topology_summary_results.csv"
         ),
     )
+    parser.add_argument(
+        "--paper-figures", action="store_true",
+        help="also create standalone one-metric figures for paper layout",
+    )
     return parser.parse_args()
 
 
@@ -3888,6 +4098,8 @@ def main() -> None:
         figures = create_topology_plots(
             summary, args.output, robustness
         )
+        if args.paper_figures:
+            figures.extend(create_paper_topology_plots(summary, args.output))
         print(
             f"Created {len(figures)} topology figure files in "
             f"{(args.output / 'figures').resolve()}"
@@ -3896,6 +4108,8 @@ def main() -> None:
     if args.plot_only is not None:
         summary = read_summary_csv(args.plot_only)
         figures = create_plots(summary, args.output)
+        if args.paper_figures:
+            figures.extend(create_paper_plots(summary, args.output))
         print(f"Created {len(figures)} figure files in {(args.output / 'figures').resolve()}")
         return
 
@@ -3934,6 +4148,8 @@ def main() -> None:
                 summary, args.output, robustness
             )
         )
+        if args.paper_figures and not args.no_plots:
+            figures.extend(create_paper_topology_plots(summary, args.output))
         print(f"\nElapsed: {time.perf_counter() - started:.2f}s")
         print(f"Results: {args.output.resolve()}")
         if figures:
@@ -3964,6 +4180,8 @@ def main() -> None:
     summary = aggregate_results(raw)
     write_results(raw, summary, args.output)
     figures = [] if args.no_plots else create_plots(summary, args.output)
+    if args.paper_figures and not args.no_plots:
+        figures.extend(create_paper_plots(summary, args.output))
     print_summary(summary)
     print(f"\nElapsed: {time.perf_counter() - started:.2f}s")
     print(f"Results: {args.output.resolve()}")
